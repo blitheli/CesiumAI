@@ -37,7 +37,7 @@ class CesiumCzmlDataSourcePort implements CzmlDataSourcePort {
   async load(packets: CzmlPacket[]): Promise<unknown> {
     const result = await this.dataSource.load(packets);
     if (!this.attached) {
-      this.viewer.dataSources.add(this.dataSource);
+      await this.viewer.dataSources.add(this.dataSource);
       this.attached = true;
     }
     return result;
@@ -72,7 +72,9 @@ export class CesiumSceneManager {
   private dataSourcePort: CzmlDataSourcePort | undefined;
   private sceneDocument: CzmlPacket[];
   private selectedEntityIds = new Set<string>();
+  private initialized = false;
   private initialization: Promise<void> | undefined;
+  private operationQueue: Promise<void> = Promise.resolve();
 
   constructor(
     emptyDocumentFactory: EmptyDocumentFactory = () =>
@@ -80,15 +82,29 @@ export class CesiumSceneManager {
     dataSourcePort?: CzmlDataSourcePort,
   ) {
     this.emptyDocument = cloneDocument(emptyDocumentFactory());
-    this.sceneDocument = cloneDocument(this.emptyDocument);
+    this.sceneDocument = [];
     this.dataSourcePort = dataSourcePort;
   }
 
   initialize(viewer?: Viewer): Promise<void> {
-    if (!this.initialization) {
-      this.initialization = this.initializeOnce(viewer);
+    if (this.initialized) {
+      return Promise.resolve();
     }
-    return this.initialization;
+    if (this.initialization) {
+      return this.initialization;
+    }
+
+    const initialization = this.initializeOnce(viewer)
+      .then(() => {
+        this.initialized = true;
+      })
+      .finally(() => {
+        if (this.initialization === initialization) {
+          this.initialization = undefined;
+        }
+      });
+    this.initialization = initialization;
+    return initialization;
   }
 
   private async initializeOnce(viewer?: Viewer): Promise<void> {
@@ -104,7 +120,16 @@ export class CesiumSceneManager {
     this.sceneDocument = empty;
   }
 
-  async applySceneOps(operations: SceneOp[]): Promise<void> {
+  applySceneOps(operations: SceneOp[]): Promise<void> {
+    const queuedOperations = structuredClone(operations);
+    const application = this.operationQueue.then(() =>
+      this.applySceneOpsInOrder(queuedOperations),
+    );
+    this.operationQueue = application.catch(() => undefined);
+    return application;
+  }
+
+  private async applySceneOpsInOrder(operations: SceneOp[]): Promise<void> {
     await this.requireInitialization();
     const port = this.requireDataSourcePort();
 
@@ -121,13 +146,18 @@ export class CesiumSceneManager {
           break;
         }
         case "upsert": {
+          const businessPackets = operation.packets.filter(
+            (packet) => packet.id !== "document",
+          );
           const nextDocument = reduceSceneDocument(
             this.sceneDocument,
             [operation],
             this.emptyDocument,
           );
-          await port.process(cloneDocument(operation.packets));
-          port.syncViewerClock();
+          if (businessPackets.length > 0) {
+            await port.process(cloneDocument(businessPackets));
+            port.syncViewerClock();
+          }
           this.sceneDocument = nextDocument;
           break;
         }
@@ -162,16 +192,19 @@ export class CesiumSceneManager {
   }
 
   private requireDataSourcePort(): CzmlDataSourcePort {
-    if (!this.dataSourcePort || !this.initialization) {
+    if (!this.dataSourcePort || !this.initialized) {
       throw new Error("CesiumSceneManager must be initialized before use");
     }
     return this.dataSourcePort;
   }
 
   private requireInitialization(): Promise<void> {
-    if (!this.initialization) {
-      throw new Error("CesiumSceneManager must be initialized before use");
+    if (this.initialized) {
+      return Promise.resolve();
     }
-    return this.initialization;
+    if (this.initialization) {
+      return this.initialization;
+    }
+    throw new Error("CesiumSceneManager must be initialized before use");
   }
 }

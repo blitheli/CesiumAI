@@ -153,6 +153,46 @@ it("routes clear, upsert, and delete through the port in operation order", async
   expect(port.load).toHaveBeenLastCalledWith(createEmpty());
 });
 
+it("filters document packets before processing a mixed upsert", async () => {
+  const port = createPort();
+  const manager = new CesiumSceneManager(createEmpty, port);
+  await manager.initialize();
+
+  await manager.applySceneOps([
+    {
+      op: "upsert",
+      packets: [
+        { id: "document", name: "Untrusted document" },
+        { id: "facility", point: {} },
+      ],
+    },
+  ]);
+
+  expect(port.process).toHaveBeenCalledOnce();
+  expect(port.process).toHaveBeenCalledWith([{ id: "facility", point: {} }]);
+  expect(manager.pickRelevantPackets(["document", "facility"])).toEqual([
+    ...createEmpty(),
+    { id: "facility", point: {} },
+  ]);
+});
+
+it("does not process an upsert containing only document packets", async () => {
+  const port = createPort();
+  const manager = new CesiumSceneManager(createEmpty, port);
+  await manager.initialize();
+
+  await manager.applySceneOps([
+    {
+      op: "upsert",
+      packets: [{ id: "document", name: "Untrusted document" }],
+    },
+  ]);
+
+  expect(port.process).not.toHaveBeenCalled();
+  expect(port.syncViewerClock).not.toHaveBeenCalled();
+  expect(manager.pickRelevantPackets(["document"])).toEqual(createEmpty());
+});
+
 it("commits an upsert only after Cesium processing and clock sync succeed", async () => {
   let resolveProcess: (() => void) | undefined;
   const processPending = new Promise<void>((resolve) => {
@@ -227,6 +267,91 @@ it("commits successful operations before a later operation rejects", async () =>
   expect(port.removeById).not.toHaveBeenCalled();
 });
 
+it("serializes concurrent apply calls so later work uses committed state", async () => {
+  let finishFirstProcess: (() => void) | undefined;
+  const firstProcess = new Promise<void>((resolve) => {
+    finishFirstProcess = resolve;
+  });
+  const port = createPort({
+    process: vi
+      .fn()
+      .mockImplementationOnce(() => firstProcess)
+      .mockResolvedValueOnce(undefined),
+  });
+  const manager = new CesiumSceneManager(createEmpty, port);
+  await manager.initialize();
+
+  const first = manager.applySceneOps([
+    {
+      op: "upsert",
+      packets: [{ id: "facility", name: "first", point: {} }],
+    },
+  ]);
+  const second = manager.applySceneOps([
+    {
+      op: "upsert",
+      packets: [{ id: "facility", name: "second", point: {} }],
+    },
+  ]);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(port.process).toHaveBeenCalledOnce();
+
+  finishFirstProcess?.();
+  await Promise.all([first, second]);
+
+  expect(port.process).toHaveBeenNthCalledWith(1, [
+    { id: "facility", name: "first", point: {} },
+  ]);
+  expect(port.process).toHaveBeenNthCalledWith(2, [
+    { id: "facility", name: "second", point: {} },
+  ]);
+  expect(manager.pickRelevantPackets(["facility"])).toEqual([
+    { id: "facility", name: "second", point: {} },
+  ]);
+});
+
+it("continues queued apply calls after an earlier call rejects", async () => {
+  const failure = new Error("first apply failed");
+  let rejectFirstProcess: ((reason: Error) => void) | undefined;
+  const firstProcess = new Promise<void>((_resolve, reject) => {
+    rejectFirstProcess = reject;
+  });
+  const port = createPort({
+    process: vi
+      .fn()
+      .mockImplementationOnce(() => firstProcess)
+      .mockResolvedValueOnce(undefined),
+  });
+  const manager = new CesiumSceneManager(createEmpty, port);
+  await manager.initialize();
+
+  const first = manager.applySceneOps([
+    { op: "upsert", packets: [{ id: "failed", point: {} }] },
+  ]);
+  const firstResult = first.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  const second = manager.applySceneOps([
+    { op: "upsert", packets: [{ id: "recovered", point: {} }] },
+  ]);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(port.process).toHaveBeenCalledOnce();
+
+  rejectFirstProcess?.(failure);
+  expect(await firstResult).toBe(failure);
+  await second;
+
+  expect(port.process).toHaveBeenCalledTimes(2);
+  expect(manager.pickRelevantPackets(["failed", "recovered"])).toEqual([
+    { id: "recovered", point: {} },
+  ]);
+});
+
 it("returns detached summary, packet, and selection values", async () => {
   const manager = new CesiumSceneManager(createEmpty, createPort());
   await manager.initialize();
@@ -297,4 +422,67 @@ it("production port loads before attaching and syncs cloned data-source clock va
     viewer.clock.startTime,
     viewer.clock.stopTime,
   );
+});
+
+it("waits for the data source attachment before completing initialization", async () => {
+  let finishAttaching: (() => void) | undefined;
+  const attaching = new Promise<void>((resolve) => {
+    finishAttaching = resolve;
+  });
+  const viewer = {
+    dataSources: {
+      add: vi.fn(() => attaching),
+    },
+    clock: {},
+    timeline: {},
+  };
+  const manager = new CesiumSceneManager(createEmpty);
+
+  const initializing = manager.initialize(viewer as unknown as Viewer);
+  const applying = manager.applySceneOps([
+    { op: "upsert", packets: [{ id: "facility", point: {} }] },
+  ]);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const dataSource = cesiumFakes.dataSources[0]!;
+  expect(viewer.dataSources.add).toHaveBeenCalledOnce();
+  expect(manager.pickRelevantPackets(["document"])).toEqual([]);
+  expect(dataSource.process).not.toHaveBeenCalled();
+
+  finishAttaching?.();
+  await initializing;
+  await applying;
+
+  expect(manager.pickRelevantPackets(["document", "facility"])).toEqual([
+    ...createEmpty(),
+    { id: "facility", point: {} },
+  ]);
+});
+
+it("keeps initialization uncommitted after attachment failure and allows retry", async () => {
+  const failure = new Error("viewer rejected data source");
+  const viewer = {
+    dataSources: {
+      add: vi
+        .fn()
+        .mockRejectedValueOnce(failure)
+        .mockResolvedValueOnce(undefined),
+    },
+    clock: {},
+    timeline: {},
+  };
+  const manager = new CesiumSceneManager(createEmpty);
+
+  await expect(
+    manager.initialize(viewer as unknown as Viewer),
+  ).rejects.toBe(failure);
+  expect(manager.pickRelevantPackets(["document"])).toEqual([]);
+
+  await manager.initialize(viewer as unknown as Viewer);
+
+  const dataSource = cesiumFakes.dataSources[0]!;
+  expect(dataSource.load).toHaveBeenCalledTimes(2);
+  expect(viewer.dataSources.add).toHaveBeenCalledTimes(2);
+  expect(manager.pickRelevantPackets(["document"])).toEqual(createEmpty());
 });
