@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/backend/">
+    <Project Path="backend/CesiumAI.Api.Tests/CesiumAI.Api.Tests.csproj" />
+    <Project Path="backend/CesiumAI.Api/CesiumAI.Api.csproj" />
+  </Folder>
+</Solution>
