@@ -21,6 +21,8 @@ export interface CzmlDataSourcePort {
   process(packets: CzmlPacket[]): Promise<unknown>;
   removeById(id: string): boolean;
   syncViewerClock(clock: CzmlDocumentClock): void;
+  snapshotViewerClock(): ViewerClockSnapshot;
+  restoreViewerClock(snapshot: ViewerClockSnapshot): void;
   getSceneDiagnostics(): SceneDiagnostics;
 }
 
@@ -30,6 +32,15 @@ export type CzmlDocumentClock = {
   interval: string;
   currentTime: string;
   multiplier?: number;
+};
+
+export type ViewerClockSnapshot = {
+  startTime: JulianDate;
+  stopTime: JulianDate;
+  currentTime: JulianDate;
+  clockRange: ClockRange;
+  multiplier: number;
+  shouldAnimate: boolean;
 };
 
 export type SceneEntityDiagnostics = {
@@ -163,11 +174,33 @@ class CesiumCzmlDataSourcePort implements CzmlDataSourcePort {
     viewerClock.stopTime = JulianDate.clone(stopTime);
     viewerClock.currentTime = JulianDate.clone(currentTime);
     viewerClock.clockRange = ClockRange.LOOP_STOP;
-    viewerClock.shouldAnimate = true;
     if (clock.multiplier !== undefined) {
       viewerClock.multiplier = clock.multiplier;
     }
     this.viewer.timeline.zoomTo(viewerClock.startTime, viewerClock.stopTime);
+  }
+
+  snapshotViewerClock(): ViewerClockSnapshot {
+    const clock = this.viewer.clock;
+    return {
+      startTime: JulianDate.clone(clock.startTime),
+      stopTime: JulianDate.clone(clock.stopTime),
+      currentTime: JulianDate.clone(clock.currentTime),
+      clockRange: clock.clockRange,
+      multiplier: clock.multiplier,
+      shouldAnimate: clock.shouldAnimate,
+    };
+  }
+
+  restoreViewerClock(snapshot: ViewerClockSnapshot): void {
+    const clock = this.viewer.clock;
+    clock.startTime = JulianDate.clone(snapshot.startTime);
+    clock.stopTime = JulianDate.clone(snapshot.stopTime);
+    clock.currentTime = JulianDate.clone(snapshot.currentTime);
+    clock.clockRange = snapshot.clockRange;
+    clock.multiplier = snapshot.multiplier;
+    clock.shouldAnimate = snapshot.shouldAnimate;
+    this.viewer.timeline.zoomTo(clock.startTime, clock.stopTime);
   }
 
   getSceneDiagnostics(): SceneDiagnostics {
@@ -285,6 +318,7 @@ export class CesiumSceneManager {
         case "upsert": {
           const businessPackets = lastPacketPerId(operation.packets);
           const previousDocument = cloneDocument(this.sceneDocument);
+          const previousClock = clockFromDocument(previousDocument);
           const nextDocument = applyAvailabilityClock(
             reduceSceneDocument(
               this.sceneDocument,
@@ -294,22 +328,23 @@ export class CesiumSceneManager {
             businessPackets,
           );
           if (businessPackets.length > 0) {
+            const viewerClockSnapshot = port.snapshotViewerClock();
             try {
               for (const packet of businessPackets) {
                 port.removeById(packet.id);
               }
               await port.process(cloneDocument(businessPackets));
               const nextClock = clockFromDocument(nextDocument);
-              if (nextClock) {
+              if (
+                nextClock &&
+                nextClock.interval !== previousClock?.interval
+              ) {
                 port.syncViewerClock(nextClock);
               }
             } catch (error) {
               try {
                 await port.load(cloneDocument(previousDocument));
-                const previousClock = clockFromDocument(previousDocument);
-                if (previousClock) {
-                  port.syncViewerClock(previousClock);
-                }
+                port.restoreViewerClock(viewerClockSnapshot);
               } catch (rollbackError) {
                 throw new AggregateError(
                   [error, rollbackError],

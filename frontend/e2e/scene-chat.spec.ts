@@ -316,6 +316,16 @@ test("satellite add accepts a one-day cartesianVelocity trajectory", async ({
     Date.parse(satellitePacket.availability.split("/")[1]!),
   );
 
+  const playForward = page.locator(
+    'g.cesium-animation-rectButton:has(title:text-is("Play Forward"))',
+  );
+  const pause = page.locator(
+    'g.cesium-animation-rectButton:has(title:text-is("Pause"))',
+  );
+  await expect(pause).toHaveClass(/cesium-animation-buttonToggled/);
+  await expect(playForward).toBeVisible();
+  await playForward.click();
+  await expect(playForward).toHaveClass(/cesium-animation-buttonToggled/);
   await page.waitForTimeout(250);
   await sendCommand(
     page,

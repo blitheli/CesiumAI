@@ -4,6 +4,7 @@ import type { CzmlPacket } from "../contracts/chat";
 import {
   CesiumSceneManager,
   type CzmlDataSourcePort,
+  type ViewerClockSnapshot,
 } from "./CesiumSceneManager";
 
 const cesiumFakes = vi.hoisted(() => {
@@ -84,6 +85,10 @@ function createPort(overrides: Partial<CzmlDataSourcePort> = {}): CzmlDataSource
     process: vi.fn(async () => undefined),
     removeById: vi.fn(() => true),
     syncViewerClock: vi.fn(),
+    snapshotViewerClock: vi.fn(
+      () => ({ marker: "snapshot" }) as unknown as ViewerClockSnapshot,
+    ),
+    restoreViewerClock: vi.fn(),
     getSceneDiagnostics: vi.fn(() => ({ entities: [] })),
     ...overrides,
   };
@@ -159,7 +164,6 @@ it("routes clear, upsert, and delete through the port in operation order", async
   expect(calls).toEqual([
     "remove:satellite",
     "process",
-    "sync-clock",
     "remove:satellite",
     "load",
   ]);
@@ -326,6 +330,79 @@ it("derives the authoritative document and viewer clock from satellite availabil
   });
 });
 
+it("resets the viewer clock only when an upsert changes the availability interval", async () => {
+  const port = createPort();
+  const manager = new CesiumSceneManager(createEmpty, port);
+  await manager.initialize();
+  const firstAvailability =
+    "2026-01-01T00:00:00Z/2026-01-02T00:00:00Z";
+  await manager.applySceneOps([
+    {
+      op: "upsert",
+      packets: [{ id: "satellite", availability: firstAvailability }],
+    },
+  ]);
+  vi.mocked(port.syncViewerClock).mockClear();
+
+  await manager.applySceneOps([
+    { op: "upsert", packets: [{ id: "facility", point: {} }] },
+    {
+      op: "upsert",
+      packets: [{ id: "satellite", availability: firstAvailability }],
+    },
+  ]);
+
+  expect(port.syncViewerClock).not.toHaveBeenCalled();
+
+  const nextAvailability =
+    "2027-01-01T00:00:00Z/2027-01-02T00:00:00Z";
+  await manager.applySceneOps([
+    {
+      op: "upsert",
+      packets: [{ id: "satellite", availability: nextAvailability }],
+    },
+  ]);
+
+  expect(port.syncViewerClock).toHaveBeenCalledOnce();
+  expect(port.syncViewerClock).toHaveBeenCalledWith({
+    interval: nextAvailability,
+    currentTime: "2027-01-01T00:00:00Z",
+  });
+});
+
+it("does not reset the viewer clock while rolling back a failed entity upsert", async () => {
+  const failure = new Error("facility rejected");
+  const port = createPort({
+    process: vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(failure),
+  });
+  const manager = new CesiumSceneManager(createEmpty, port);
+  await manager.initialize();
+  await manager.applySceneOps([
+    {
+      op: "upsert",
+      packets: [
+        {
+          id: "satellite",
+          availability:
+            "2026-01-01T00:00:00Z/2026-01-02T00:00:00Z",
+        },
+      ],
+    },
+  ]);
+  vi.mocked(port.syncViewerClock).mockClear();
+
+  await expect(
+    manager.applySceneOps([
+      { op: "upsert", packets: [{ id: "facility", point: {} }] },
+    ]),
+  ).rejects.toBe(failure);
+
+  expect(port.syncViewerClock).not.toHaveBeenCalled();
+});
+
 it("commits an upsert only after Cesium processing and clock sync succeed", async () => {
   let resolveProcess: (() => void) | undefined;
   const processPending = new Promise<void>((resolve) => {
@@ -338,18 +415,31 @@ it("commits an upsert only after Cesium processing and clock sync succeed", asyn
   await manager.initialize();
 
   const applying = manager.applySceneOps([
-    { op: "upsert", packets: [{ id: "facility", point: {} }] },
+    {
+      op: "upsert",
+      packets: [
+        {
+          id: "satellite",
+          availability:
+            "2026-01-01T00:00:00Z/2026-01-02T00:00:00Z",
+        },
+      ],
+    },
   ]);
 
-  expect(manager.pickRelevantPackets(["facility"])).toEqual([]);
+  expect(manager.pickRelevantPackets(["satellite"])).toEqual([]);
   expect(port.syncViewerClock).not.toHaveBeenCalled();
 
   resolveProcess?.();
   await applying;
 
   expect(port.syncViewerClock).toHaveBeenCalledOnce();
-  expect(manager.pickRelevantPackets(["facility"])).toEqual([
-    { id: "facility", point: {} },
+  expect(manager.pickRelevantPackets(["satellite"])).toEqual([
+    {
+      id: "satellite",
+      availability:
+        "2026-01-01T00:00:00Z/2026-01-02T00:00:00Z",
+    },
   ]);
 });
 
@@ -370,8 +460,8 @@ it("stops at a rejected operation and leaves its document change uncommitted", a
     ]),
   ).rejects.toBe(failure);
 
-  expect(port.syncViewerClock).toHaveBeenCalledOnce();
-  expect(port.syncViewerClock).toHaveBeenCalledWith(createEmpty()[0]?.clock);
+  expect(port.syncViewerClock).not.toHaveBeenCalled();
+  expect(port.restoreViewerClock).toHaveBeenCalledOnce();
   expect(port.load).toHaveBeenCalledTimes(2);
   expect(port.load).toHaveBeenLastCalledWith(createEmpty());
   expect(manager.pickRelevantPackets(["invalid"])).toEqual([]);
@@ -520,6 +610,7 @@ it("production port loads before attaching and syncs the explicit availability c
       currentTime: { value: "old-current" },
       clockRange: 0,
       multiplier: 1,
+      shouldAnimate: false,
     },
     timeline: {
       zoomTo: vi.fn(),
@@ -556,7 +647,7 @@ it("production port loads before attaching and syncs the explicit availability c
     currentTime: { value: "2026-01-01T00:00:00Z" },
     clockRange: 2,
     multiplier: 1,
-    shouldAnimate: true,
+    shouldAnimate: false,
   });
   expect(viewer.clock.startTime).not.toEqual(dataSource.clock.startTime);
   expect(viewer.clock.stopTime).not.toEqual(dataSource.clock.stopTime);
@@ -565,6 +656,101 @@ it("production port loads before attaching and syncs the explicit availability c
     viewer.clock.startTime,
     viewer.clock.stopTime,
   );
+});
+
+it("production port preserves an advanced paused clock for facility and same-interval upserts", async () => {
+  const viewer = {
+    dataSources: {
+      add: vi.fn(),
+    },
+    clock: {
+      startTime: { value: "old-start" },
+      stopTime: { value: "old-stop" },
+      currentTime: { value: "old-current" },
+      clockRange: 0,
+      multiplier: 1,
+      shouldAnimate: false,
+    },
+    timeline: {
+      zoomTo: vi.fn(),
+    },
+  };
+  const manager = new CesiumSceneManager(createEmpty);
+  await manager.initialize(viewer as unknown as Viewer);
+  const availability =
+    "2026-01-01T00:00:00Z/2026-01-02T00:00:00Z";
+  await manager.applySceneOps([
+    {
+      op: "upsert",
+      packets: [{ id: "satellite", availability, path: {} }],
+    },
+  ]);
+  viewer.clock.shouldAnimate = true;
+  viewer.clock.currentTime = { value: "2026-01-01T12:34:56Z" };
+  viewer.clock.shouldAnimate = false;
+  const pausedClock = structuredClone(viewer.clock);
+  viewer.timeline.zoomTo.mockClear();
+
+  await manager.applySceneOps([
+    { op: "upsert", packets: [{ id: "facility", point: {} }] },
+    {
+      op: "upsert",
+      packets: [{ id: "satellite", availability, path: { width: 3 } }],
+    },
+  ]);
+
+  expect(viewer.clock).toEqual(pausedClock);
+  expect(viewer.timeline.zoomTo).not.toHaveBeenCalled();
+});
+
+it("production port restores the exact Viewer clock snapshot after a failed entity upsert", async () => {
+  const viewer = {
+    dataSources: {
+      add: vi.fn(),
+    },
+    clock: {
+      startTime: { value: "old-start" },
+      stopTime: { value: "old-stop" },
+      currentTime: { value: "old-current" },
+      clockRange: 0,
+      multiplier: 1,
+      shouldAnimate: false,
+    },
+    timeline: {
+      zoomTo: vi.fn(),
+    },
+  };
+  const manager = new CesiumSceneManager(createEmpty);
+  await manager.initialize(viewer as unknown as Viewer);
+  await manager.applySceneOps([
+    {
+      op: "upsert",
+      packets: [
+        {
+          id: "satellite",
+          availability:
+            "2026-01-01T00:00:00Z/2026-01-02T00:00:00Z",
+        },
+      ],
+    },
+  ]);
+  const dataSource = cesiumFakes.dataSources[0]!;
+  dataSource.process.mockRejectedValueOnce(new Error("facility rejected"));
+  viewer.clock.startTime = { value: "snapshot-start" };
+  viewer.clock.stopTime = { value: "snapshot-stop" };
+  viewer.clock.currentTime = { value: "snapshot-current" };
+  viewer.clock.clockRange = 7;
+  viewer.clock.multiplier = 123;
+  viewer.clock.shouldAnimate = false;
+  const snapshot = structuredClone(viewer.clock);
+
+  await expect(
+    manager.applySceneOps([
+      { op: "upsert", packets: [{ id: "facility", point: {} }] },
+    ]),
+  ).rejects.toThrow("facility rejected");
+
+  expect(viewer.clock).toEqual(snapshot);
 });
 
 it("waits for the data source attachment before completing initialization", async () => {
