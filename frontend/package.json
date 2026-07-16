@@ -9,8 +9,7 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "test": "vitest",
-    "test:coverage": "vitest run --coverage",
-    "e2e": "playwright test"
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "cesium": "^1.143.0",
