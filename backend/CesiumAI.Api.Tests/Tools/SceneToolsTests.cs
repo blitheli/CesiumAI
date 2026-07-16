@@ -186,6 +186,506 @@ public class SceneToolsTests
         collector.Drain().Should().BeEmpty();
     }
 
+    [Fact]
+    public void FocusEntity_QueuesSingleCameraFocusOperation()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        string result = tools.FocusEntity("iss", distanceMeters: 2_000_000, headingDegrees: 15, pitchDegrees: -30);
+
+        result.Should().Contain("iss");
+        CameraSceneOp operation = collector.Drain().Should().ContainSingle().Which.Should().BeOfType<CameraSceneOp>().Subject;
+        operation.Action.Should().Be(CameraAction.Focus);
+        operation.TargetId.Should().Be("iss");
+        operation.DistanceMeters.Should().Be(2_000_000);
+        operation.HeadingDegrees.Should().Be(15);
+        operation.PitchDegrees.Should().Be(-30);
+    }
+
+    [Theory]
+    [InlineData(" ")]
+    [InlineData("document")]
+    [InlineData("DOCUMENT")]
+    public void FocusEntity_RejectsBlankOrDocumentId_WithoutQueuingOperations(string id)
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Action act = () => tools.FocusEntity(id);
+
+        act.Should().Throw<ArgumentException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-100)]
+    public void FocusEntity_RejectsNonPositiveDistance_WithoutQueuingOperations(double distanceMeters)
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Action act = () => tools.FocusEntity("iss", distanceMeters: distanceMeters);
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void FocusEntity_RejectsNonFiniteNumericParameters_WithoutQueuingOperations()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Action distanceAct = () => tools.FocusEntity("iss", distanceMeters: double.NaN);
+        Action headingAct = () => tools.FocusEntity("iss", headingDegrees: double.PositiveInfinity);
+        Action pitchAct = () => tools.FocusEntity("iss", pitchDegrees: double.NegativeInfinity);
+
+        distanceAct.Should().Throw<ArgumentOutOfRangeException>();
+        headingAct.Should().Throw<ArgumentOutOfRangeException>();
+        pitchAct.Should().Throw<ArgumentOutOfRangeException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void TrackEntity_QueuesSingleCameraTrackOperation()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        string result = tools.TrackEntity("iss");
+
+        result.Should().Contain("iss");
+        CameraSceneOp operation = collector.Drain().Should().ContainSingle().Which.Should().BeOfType<CameraSceneOp>().Subject;
+        operation.Action.Should().Be(CameraAction.Track);
+        operation.TargetId.Should().Be("iss");
+    }
+
+    [Theory]
+    [InlineData(" ")]
+    [InlineData("document")]
+    public void TrackEntity_RejectsBlankOrDocumentId_WithoutQueuingOperations(string id)
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Action act = () => tools.TrackEntity(id);
+
+        act.Should().Throw<ArgumentException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void StopTracking_QueuesSingleCameraUntrackOperation()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        string result = tools.StopTracking();
+
+        result.Should().NotBeNullOrWhiteSpace();
+        CameraSceneOp operation = collector.Drain().Should().ContainSingle().Which.Should().BeOfType<CameraSceneOp>().Subject;
+        operation.Action.Should().Be(CameraAction.Untrack);
+    }
+
+    [Fact]
+    public void AdjustCamera_Zoom_QueuesSingleZoomOperation()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        string result = tools.AdjustCamera(action: "zoom", amount: 500);
+
+        result.Should().NotBeNullOrWhiteSpace();
+        CameraSceneOp operation = collector.Drain().Should().ContainSingle().Which.Should().BeOfType<CameraSceneOp>().Subject;
+        operation.Action.Should().Be(CameraAction.Zoom);
+        operation.Amount.Should().Be(500);
+    }
+
+    [Fact]
+    public void AdjustCamera_Zoom_RejectsZeroAmount_WithoutQueuingOperations()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Action act = () => tools.AdjustCamera(action: "zoom", amount: 0);
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AdjustCamera_Zoom_RejectsNonFiniteAmount_WithoutQueuingOperations()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Action nanAct = () => tools.AdjustCamera(action: "zoom", amount: double.NaN);
+        Action infinityAct = () => tools.AdjustCamera(action: "zoom", amount: double.PositiveInfinity);
+
+        nanAct.Should().Throw<ArgumentOutOfRangeException>();
+        infinityAct.Should().Throw<ArgumentOutOfRangeException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AdjustCamera_Zoom_RejectsNonFiniteInapplicableParameters_WithoutQueuingOperations()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Action act = () => tools.AdjustCamera(
+            action: "zoom",
+            amount: 500,
+            headingDegrees: double.NaN,
+            pitchDegrees: double.PositiveInfinity,
+            rollDegrees: double.NegativeInfinity);
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("left")]
+    [InlineData("right")]
+    [InlineData("up")]
+    [InlineData("down")]
+    public void AdjustCamera_Pan_QueuesSinglePanOperation(string direction)
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        string result = tools.AdjustCamera(action: "pan", direction: direction, amount: 100);
+
+        result.Should().NotBeNullOrWhiteSpace();
+        CameraSceneOp operation = collector.Drain().Should().ContainSingle().Which.Should().BeOfType<CameraSceneOp>().Subject;
+        operation.Action.Should().Be(CameraAction.Pan);
+        operation.Direction.Should().Be(direction);
+        operation.Amount.Should().Be(100);
+    }
+
+    [Theory]
+    [InlineData("forward")]
+    [InlineData("")]
+    [InlineData("LEFT")]
+    public void AdjustCamera_Pan_RejectsInvalidDirection_WithoutQueuingOperations(string direction)
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Action act = () => tools.AdjustCamera(action: "pan", direction: direction, amount: 100);
+
+        act.Should().Throw<ArgumentException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AdjustCamera_Pan_RejectsNonFiniteAmount_WithoutQueuingOperations()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Action act = () => tools.AdjustCamera(action: "pan", direction: "left", amount: double.NaN);
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AdjustCamera_Rotate_QueuesSingleRotateOperation()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        string result = tools.AdjustCamera(
+            action: "rotate",
+            headingDegrees: 30,
+            pitchDegrees: -10,
+            rollDegrees: 5);
+
+        result.Should().NotBeNullOrWhiteSpace();
+        CameraSceneOp operation = collector.Drain().Should().ContainSingle().Which.Should().BeOfType<CameraSceneOp>().Subject;
+        operation.Action.Should().Be(CameraAction.Rotate);
+        operation.HeadingDegrees.Should().Be(30);
+        operation.PitchDegrees.Should().Be(-10);
+        operation.RollDegrees.Should().Be(5);
+    }
+
+    [Fact]
+    public void AdjustCamera_Rotate_RejectsNonFiniteAnglesOrAmount_WithoutQueuingOperations()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Action headingAct = () => tools.AdjustCamera(action: "rotate", headingDegrees: double.NaN);
+        Action pitchAct = () => tools.AdjustCamera(action: "rotate", pitchDegrees: double.PositiveInfinity);
+        Action rollAct = () => tools.AdjustCamera(action: "rotate", rollDegrees: double.NegativeInfinity);
+        Action amountAct = () => tools.AdjustCamera(action: "rotate", amount: double.NaN);
+
+        headingAct.Should().Throw<ArgumentOutOfRangeException>();
+        pitchAct.Should().Throw<ArgumentOutOfRangeException>();
+        rollAct.Should().Throw<ArgumentOutOfRangeException>();
+        amountAct.Should().Throw<ArgumentOutOfRangeException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void OrbitEntity_Step_QueuesSingleOrbitStepOperation()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        string result = tools.OrbitEntity(
+            id: "iss",
+            mode: "step",
+            amount: 45,
+            headingDegrees: 10,
+            pitchDegrees: -20,
+            distanceMeters: 1_500_000);
+
+        result.Should().Contain("iss");
+        CameraSceneOp operation = collector.Drain().Should().ContainSingle().Which.Should().BeOfType<CameraSceneOp>().Subject;
+        operation.Action.Should().Be(CameraAction.OrbitStep);
+        operation.TargetId.Should().Be("iss");
+        operation.Amount.Should().Be(45);
+        operation.HeadingDegrees.Should().Be(10);
+        operation.PitchDegrees.Should().Be(-20);
+        operation.DistanceMeters.Should().Be(1_500_000);
+    }
+
+    [Fact]
+    public void OrbitEntity_Start_QueuesSingleOrbitStartOperation()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        string result = tools.OrbitEntity(
+            id: "iss",
+            mode: "start",
+            angularSpeedDegreesPerSecond: 12);
+
+        result.Should().Contain("iss");
+        CameraSceneOp operation = collector.Drain().Should().ContainSingle().Which.Should().BeOfType<CameraSceneOp>().Subject;
+        operation.Action.Should().Be(CameraAction.OrbitStart);
+        operation.TargetId.Should().Be("iss");
+        operation.AngularSpeedDegreesPerSecond.Should().Be(12);
+    }
+
+    [Theory]
+    [InlineData("loop")]
+    [InlineData("")]
+    [InlineData("STEP")]
+    public void OrbitEntity_RejectsInvalidMode_WithoutQueuingOperations(string mode)
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Action act = () => tools.OrbitEntity(id: "iss", mode: mode, amount: 45);
+
+        act.Should().Throw<ArgumentException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void OrbitEntity_Start_RejectsNonPositiveAngularSpeed_WithoutQueuingOperations(double angularSpeed)
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Action act = () => tools.OrbitEntity(
+            id: "iss",
+            mode: "start",
+            angularSpeedDegreesPerSecond: angularSpeed);
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void OrbitEntity_Step_RejectsMissingZeroOrNonFiniteAmount_WithoutQueuingOperations()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Action missingAct = () => tools.OrbitEntity(id: "iss", mode: "step");
+        Action zeroAct = () => tools.OrbitEntity(id: "iss", mode: "step", amount: 0);
+        Action nanAct = () => tools.OrbitEntity(id: "iss", mode: "step", amount: double.NaN);
+        Action infinityAct = () => tools.OrbitEntity(id: "iss", mode: "step", amount: double.PositiveInfinity);
+
+        missingAct.Should().Throw<ArgumentOutOfRangeException>();
+        zeroAct.Should().Throw<ArgumentOutOfRangeException>();
+        nanAct.Should().Throw<ArgumentOutOfRangeException>();
+        infinityAct.Should().Throw<ArgumentOutOfRangeException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void OrbitEntity_Start_RejectsNonFiniteAngularSpeed_WithoutQueuingOperations()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Action nanAct = () => tools.OrbitEntity(
+            id: "iss",
+            mode: "start",
+            angularSpeedDegreesPerSecond: double.NaN);
+        Action infinityAct = () => tools.OrbitEntity(
+            id: "iss",
+            mode: "start",
+            angularSpeedDegreesPerSecond: double.PositiveInfinity);
+
+        nanAct.Should().Throw<ArgumentOutOfRangeException>();
+        infinityAct.Should().Throw<ArgumentOutOfRangeException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void OrbitEntity_RejectsNonFiniteInapplicableOrOptionalParameters_WithoutQueuingOperations()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        // 仅注入当前 mode 不适用或可选字段上的非有限值，避免被 distance 校验提前挡住。
+        Action stepAngularAct = () => tools.OrbitEntity(
+            id: "iss",
+            mode: "step",
+            amount: 45,
+            angularSpeedDegreesPerSecond: double.NaN);
+        Action stepHeadingAct = () => tools.OrbitEntity(
+            id: "iss",
+            mode: "step",
+            amount: 45,
+            headingDegrees: double.PositiveInfinity);
+        Action stepPitchAct = () => tools.OrbitEntity(
+            id: "iss",
+            mode: "step",
+            amount: 45,
+            pitchDegrees: double.NegativeInfinity);
+        Action startAmountAct = () => tools.OrbitEntity(
+            id: "iss",
+            mode: "start",
+            angularSpeedDegreesPerSecond: 12,
+            amount: double.NaN);
+        Action startHeadingAct = () => tools.OrbitEntity(
+            id: "iss",
+            mode: "start",
+            angularSpeedDegreesPerSecond: 12,
+            headingDegrees: double.NaN);
+
+        stepAngularAct.Should().Throw<ArgumentOutOfRangeException>();
+        stepHeadingAct.Should().Throw<ArgumentOutOfRangeException>();
+        stepPitchAct.Should().Throw<ArgumentOutOfRangeException>();
+        startAmountAct.Should().Throw<ArgumentOutOfRangeException>();
+        startHeadingAct.Should().Throw<ArgumentOutOfRangeException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(" ")]
+    [InlineData("document")]
+    public void OrbitEntity_RejectsBlankOrDocumentId_WithoutQueuingOperations(string id)
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Action act = () => tools.OrbitEntity(id: id, mode: "step", amount: 45);
+
+        act.Should().Throw<ArgumentException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void StopOrbit_QueuesSingleOrbitStopOperation()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        string result = tools.StopOrbit();
+
+        result.Should().NotBeNullOrWhiteSpace();
+        CameraSceneOp operation = collector.Drain().Should().ContainSingle().Which.Should().BeOfType<CameraSceneOp>().Subject;
+        operation.Action.Should().Be(CameraAction.OrbitStop);
+    }
+
+    [Fact]
+    public void UpdateEntityStyle_QueuesSingleStyleOperation_AfterValidation()
+    {
+        var collector = new SceneOpCollector();
+        var validator = new RecordingStyleValidator();
+        var tools = CreateTools(collector, validator);
+
+        string result = tools.UpdateEntityStyle("iss", """{ "path": { "width": 5 } }""");
+
+        result.Should().Contain("iss");
+        validator.Calls.Should().ContainSingle();
+        StyleSceneOp operation = collector.Drain().Should().ContainSingle().Which.Should().BeOfType<StyleSceneOp>().Subject;
+        operation.Id.Should().Be("iss");
+        operation.Patch.GetProperty("path").GetProperty("width").GetInt32().Should().Be(5);
+    }
+
+    [Theory]
+    [InlineData(" ")]
+    [InlineData("document")]
+    public void UpdateEntityStyle_RejectsBlankOrDocumentId_WithoutQueuingOperations(string id)
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Action act = () => tools.UpdateEntityStyle(id, """{ "path": { "width": 5 } }""");
+
+        act.Should().Throw<ArgumentException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void UpdateEntityStyle_DoesNotQueueOperations_WhenPatchJsonIsInvalid()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Action act = () => tools.UpdateEntityStyle("iss", "{ not-json");
+
+        act.Should().Throw<ArgumentException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void UpdateEntityStyle_DoesNotQueueOperations_WhenValidatorRejectsPatch()
+    {
+        var collector = new SceneOpCollector();
+        var validator = new RecordingStyleValidator(_ => throw new ArgumentException("非法样式 patch"));
+        var tools = CreateTools(collector, validator);
+
+        Action act = () => tools.UpdateEntityStyle("iss", """{ "id": "hacked" }""");
+
+        act.Should().Throw<ArgumentException>().WithMessage("非法样式 patch");
+        collector.Drain().Should().BeEmpty();
+        validator.Calls.Should().ContainSingle();
+    }
+
+    private static SceneTools CreateTools(
+        ISceneOpSink sink,
+        ISceneStyleValidator? styleValidator = null)
+        => new(sink, new StubOrbitScenarioService(), styleValidator: styleValidator ?? new SceneStyleValidator());
+
+    private sealed class RecordingStyleValidator(
+        Func<JsonElement, JsonElement>? validate = null) : ISceneStyleValidator
+    {
+        private readonly Func<JsonElement, JsonElement> _validate =
+            validate ?? (patch => patch.Clone());
+
+        public List<JsonElement> Calls { get; } = [];
+
+        public JsonElement ValidateAndClone(JsonElement patch)
+        {
+            Calls.Add(patch.Clone());
+            return _validate(patch);
+        }
+    }
+
     private sealed class StubOrbitScenarioService(
         Func<SsoJ2Scenario, CancellationToken, Task<JsonElement>>? createPacket = null) : IOrbitScenarioService
     {

@@ -10,11 +10,21 @@ namespace CesiumAI.Api.Tools;
 public sealed class SceneTools(
     ISceneOpSink sceneOpSink,
     IOrbitScenarioService orbitScenarioService,
-    TimeProvider? timeProvider = null)
+    TimeProvider? timeProvider = null,
+    ISceneStyleValidator? styleValidator = null)
 {
+    private static readonly HashSet<string> AllowedPanDirections = new(StringComparer.Ordinal)
+    {
+        "left",
+        "right",
+        "up",
+        "down"
+    };
+
     private readonly ISceneOpSink _sceneOpSink = sceneOpSink ?? throw new ArgumentNullException(nameof(sceneOpSink));
     private readonly IOrbitScenarioService _orbitScenarioService = orbitScenarioService ?? throw new ArgumentNullException(nameof(orbitScenarioService));
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
+    private readonly ISceneStyleValidator _styleValidator = styleValidator ?? new SceneStyleValidator();
 
     [Description("Queue a clear-scene operation.")]
     public string ClearScene()
@@ -129,6 +139,202 @@ public sealed class SceneTools(
         return $"Satellite '{satelliteId}' queued for upsert.";
     }
 
+    [Description("Fly the camera to focus on an entity. Distances use meters; angles use degrees.")]
+    public string FocusEntity(
+        string id,
+        double? distanceMeters = null,
+        double? headingDegrees = null,
+        double? pitchDegrees = null)
+    {
+        string targetId = ValidateEntityId(id, nameof(id));
+        double? validatedDistance = ValidateOptionalPositiveDistance(distanceMeters);
+        EnsureOptionalFinite(headingDegrees, nameof(headingDegrees));
+        EnsureOptionalFinite(pitchDegrees, nameof(pitchDegrees));
+
+        _sceneOpSink.Add(new CameraSceneOp(
+            CameraAction.Focus,
+            TargetId: targetId,
+            DistanceMeters: validatedDistance,
+            HeadingDegrees: headingDegrees,
+            PitchDegrees: pitchDegrees));
+
+        return $"Camera focus on '{targetId}' queued.";
+    }
+
+    [Description("Start tracking an entity with the Cesium trackedEntity camera.")]
+    public string TrackEntity(string id)
+    {
+        string targetId = ValidateEntityId(id, nameof(id));
+        _sceneOpSink.Add(new CameraSceneOp(CameraAction.Track, TargetId: targetId));
+        return $"Camera tracking '{targetId}' queued.";
+    }
+
+    [Description("Stop tracking the current entity.")]
+    public string StopTracking()
+    {
+        _sceneOpSink.Add(new CameraSceneOp(CameraAction.Untrack));
+        return "Camera untrack queued.";
+    }
+
+    [Description("Adjust the camera relatively. action is zoom|pan|rotate. Distances use meters; angles use degrees.")]
+    public string AdjustCamera(
+        string action,
+        double? amount = null,
+        string? direction = null,
+        double? headingDegrees = null,
+        double? pitchDegrees = null,
+        double? rollDegrees = null)
+    {
+        if (string.IsNullOrWhiteSpace(action))
+        {
+            throw new ArgumentException("Camera action cannot be blank.", nameof(action));
+        }
+
+        string normalizedAction = action.Trim();
+        CameraAction cameraAction = normalizedAction.ToLowerInvariant() switch
+        {
+            "zoom" => CameraAction.Zoom,
+            "pan" => CameraAction.Pan,
+            "rotate" => CameraAction.Rotate,
+            _ => throw new ArgumentException("Camera action must be zoom, pan, or rotate.", nameof(action))
+        };
+
+        // 所有数值参数均拒绝 NaN/Infinity，避免不适用字段把非有限值写入 op。
+        EnsureOptionalFinite(amount, nameof(amount));
+        EnsureOptionalFinite(headingDegrees, nameof(headingDegrees));
+        EnsureOptionalFinite(pitchDegrees, nameof(pitchDegrees));
+        EnsureOptionalFinite(rollDegrees, nameof(rollDegrees));
+
+        string? validatedDirection = null;
+
+        switch (cameraAction)
+        {
+            case CameraAction.Zoom:
+                if (amount is null || amount == 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(amount), amount, "Zoom amount cannot be zero and must be finite.");
+                }
+
+                break;
+
+            case CameraAction.Pan:
+                validatedDirection = ValidatePanDirection(direction);
+                break;
+
+            case CameraAction.Rotate:
+                break;
+        }
+
+        _sceneOpSink.Add(new CameraSceneOp(
+            cameraAction,
+            Amount: amount,
+            Direction: validatedDirection,
+            HeadingDegrees: headingDegrees,
+            PitchDegrees: pitchDegrees,
+            RollDegrees: rollDegrees));
+
+        return $"Camera {normalizedAction.ToLowerInvariant()} adjustment queued.";
+    }
+
+    [Description("Orbit around an entity. mode is step|start. Angles and angular speed use degrees.")]
+    public string OrbitEntity(
+        string id,
+        string mode,
+        double? amount = null,
+        double? angularSpeedDegreesPerSecond = null,
+        double? headingDegrees = null,
+        double? pitchDegrees = null,
+        double? distanceMeters = null)
+    {
+        string targetId = ValidateEntityId(id, nameof(id));
+        if (string.IsNullOrWhiteSpace(mode))
+        {
+            throw new ArgumentException("Orbit mode cannot be blank.", nameof(mode));
+        }
+
+        string normalizedMode = mode.Trim();
+        // 模式字面量大小写敏感，仅接受 step|start。
+        CameraAction cameraAction = normalizedMode switch
+        {
+            "step" => CameraAction.OrbitStep,
+            "start" => CameraAction.OrbitStart,
+            _ => throw new ArgumentException("Orbit mode must be step or start.", nameof(mode))
+        };
+
+        // 所有数值参数均拒绝 NaN/Infinity，避免不适用字段把非有限值写入 op。
+        EnsureOptionalFinite(amount, nameof(amount));
+        EnsureOptionalFinite(angularSpeedDegreesPerSecond, nameof(angularSpeedDegreesPerSecond));
+        EnsureOptionalFinite(headingDegrees, nameof(headingDegrees));
+        EnsureOptionalFinite(pitchDegrees, nameof(pitchDegrees));
+        double? validatedDistance = ValidateOptionalPositiveDistance(distanceMeters);
+
+        if (cameraAction == CameraAction.OrbitStep)
+        {
+            if (amount is null || amount == 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(amount),
+                    amount,
+                    "Orbit step amount must be a non-zero finite angle in degrees.");
+            }
+        }
+        else
+        {
+            if (angularSpeedDegreesPerSecond is null || angularSpeedDegreesPerSecond.Value <= 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(angularSpeedDegreesPerSecond),
+                    angularSpeedDegreesPerSecond,
+                    "Angular speed must be greater than 0.");
+            }
+        }
+
+        _sceneOpSink.Add(new CameraSceneOp(
+            cameraAction,
+            TargetId: targetId,
+            Amount: amount,
+            AngularSpeedDegreesPerSecond: angularSpeedDegreesPerSecond,
+            HeadingDegrees: headingDegrees,
+            PitchDegrees: pitchDegrees,
+            DistanceMeters: validatedDistance));
+
+        return cameraAction == CameraAction.OrbitStep
+            ? $"Camera orbit step around '{targetId}' queued."
+            : $"Camera orbit start around '{targetId}' queued.";
+    }
+
+    [Description("Stop continuous camera orbiting.")]
+    public string StopOrbit()
+    {
+        _sceneOpSink.Add(new CameraSceneOp(CameraAction.OrbitStop));
+        return "Camera orbit stop queued.";
+    }
+
+    [Description("Update allowed visual style properties of an existing entity via a JSON patch.")]
+    public string UpdateEntityStyle(string id, string patchJson)
+    {
+        string entityId = ValidateEntityId(id, nameof(id));
+        if (string.IsNullOrWhiteSpace(patchJson))
+        {
+            throw new ArgumentException("Style patch JSON cannot be blank.", nameof(patchJson));
+        }
+
+        JsonElement parsed;
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(patchJson);
+            parsed = document.RootElement.Clone();
+        }
+        catch (JsonException ex)
+        {
+            throw new ArgumentException("Style patch JSON is invalid.", nameof(patchJson), ex);
+        }
+
+        JsonElement validatedPatch = _styleValidator.ValidateAndClone(parsed);
+        _sceneOpSink.Add(new StyleSceneOp(entityId, validatedPatch));
+        return $"Style update for '{entityId}' queued.";
+    }
+
     private static string ValidateRequiredId(string id, string parameterName)
     {
         if (string.IsNullOrWhiteSpace(id))
@@ -137,6 +343,59 @@ public sealed class SceneTools(
         }
 
         return id.Trim();
+    }
+
+    private static string ValidateEntityId(string id, string parameterName)
+    {
+        string trimmed = ValidateRequiredId(id, parameterName);
+        if (string.Equals(trimmed, "document", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("Document id cannot be used as an entity target.", parameterName);
+        }
+
+        return trimmed;
+    }
+
+    private static double? ValidateOptionalPositiveDistance(double? distanceMeters)
+    {
+        if (distanceMeters is null)
+        {
+            return null;
+        }
+
+        if (!double.IsFinite(distanceMeters.Value) || distanceMeters.Value <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(distanceMeters),
+                distanceMeters,
+                "Distance must be greater than 0 meters.");
+        }
+
+        return distanceMeters;
+    }
+
+    private static string ValidatePanDirection(string? direction)
+    {
+        if (string.IsNullOrWhiteSpace(direction))
+        {
+            throw new ArgumentException("Pan direction is required.", nameof(direction));
+        }
+
+        string normalized = direction.Trim();
+        if (!AllowedPanDirections.Contains(normalized))
+        {
+            throw new ArgumentException("Pan direction must be left, right, up, or down.", nameof(direction));
+        }
+
+        return normalized;
+    }
+
+    private static void EnsureOptionalFinite(double? value, string parameterName)
+    {
+        if (value is not null && !double.IsFinite(value.Value))
+        {
+            throw new ArgumentOutOfRangeException(parameterName, value, "Value must be a finite number.");
+        }
     }
 
     private static void ValidateLongitude(double longitudeDegrees)
