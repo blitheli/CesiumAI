@@ -1,0 +1,253 @@
+:root {
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  color: #e8edf5;
+  background: #07101d;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  min-width: 320px;
+  overflow: hidden;
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+.app-shell {
+  width: 100%;
+  height: 100svh;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  overflow: hidden;
+  background: #07101d;
+}
+
+.viewer-pane {
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  background: #02060c;
+}
+
+.viewer-pane > div {
+  width: 100%;
+  height: 100%;
+}
+
+.chat-panel {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  border-left: 1px solid #263348;
+  background:
+    radial-gradient(circle at 100% 0, rgb(28 84 125 / 24%), transparent 42%),
+    #0d1726;
+}
+
+.chat-header {
+  padding: 24px 22px 18px;
+  border-bottom: 1px solid #263348;
+}
+
+.chat-header h1 {
+  margin: 0;
+  color: #f7f9fc;
+  font-size: 1.25rem;
+  letter-spacing: 0.02em;
+}
+
+.chat-header p {
+  margin: 6px 0 0;
+  color: #91a0b6;
+  font-size: 0.875rem;
+}
+
+.message-list {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.empty-message {
+  margin: auto 12px;
+  color: #8391a6;
+  font-size: 0.9rem;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.message {
+  max-width: 90%;
+}
+
+.message-user {
+  align-self: flex-end;
+}
+
+.message-assistant {
+  align-self: flex-start;
+}
+
+.message-label {
+  display: block;
+  margin: 0 4px 5px;
+  color: #7f90a8;
+  font-size: 0.72rem;
+}
+
+.message p {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #29384f;
+  border-radius: 12px;
+  color: #e9eef6;
+  background: #131f30;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.message-user p {
+  border-color: #245c78;
+  background: #123d55;
+}
+
+.chat-feedback {
+  min-height: 30px;
+  padding: 0 18px;
+}
+
+.chat-feedback p {
+  margin: 0 0 8px;
+  font-size: 0.8rem;
+}
+
+.chat-feedback [role="status"] {
+  color: #82c9ec;
+}
+
+.chat-feedback [role="alert"] {
+  color: #ff9e9e;
+}
+
+.chat-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid #263348;
+}
+
+.chat-composer label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.chat-composer textarea {
+  width: 100%;
+  min-height: 72px;
+  max-height: 150px;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid #32435b;
+  border-radius: 10px;
+  outline: none;
+  color: #f1f5fa;
+  background: #0a1320;
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+
+.chat-composer textarea:focus {
+  border-color: #55a7ce;
+  box-shadow: 0 0 0 3px rgb(85 167 206 / 16%);
+}
+
+.chat-composer textarea:disabled {
+  opacity: 0.65;
+}
+
+.chat-composer button {
+  align-self: end;
+  min-width: 64px;
+  height: 38px;
+  border: 1px solid #4b9fc8;
+  border-radius: 9px;
+  color: #06111a;
+  background: #75c8ed;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.chat-composer button:hover:not(:disabled) {
+  background: #9ad9f5;
+}
+
+.chat-composer button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+@media (max-width: 800px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) minmax(0, 45%);
+  }
+
+  .chat-panel {
+    max-height: 45svh;
+    border-top: 1px solid #263348;
+    border-left: 0;
+  }
+
+  .chat-header {
+    padding: 12px 16px 10px;
+  }
+
+  .chat-header p {
+    display: none;
+  }
+
+  .message-list {
+    padding: 12px 16px;
+  }
+
+  .chat-composer {
+    padding: 10px 12px 12px;
+  }
+
+  .chat-composer textarea {
+    min-height: 48px;
+    max-height: 88px;
+  }
+}
