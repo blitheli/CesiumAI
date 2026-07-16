@@ -80,11 +80,11 @@ public class AgentFactoryTests
     {
         string parent = Directory.CreateTempSubdirectory().FullName;
         string contentRoot = Directory.CreateDirectory(Path.Combine(parent, "api")).FullName;
-        Directory.CreateDirectory(Path.Combine(parent, "skills"));
+        Directory.CreateDirectory(Path.Combine(parent, "astrox-skills", "skills"));
 
         try
         {
-            AgentFactory factory = CreateFactory(contentRoot, "../skills");
+            AgentFactory factory = CreateFactory(contentRoot, "../astrox-skills/skills");
 
             AgentRuntime runtime = await factory.CreateAsync("session", CancellationToken.None);
 
