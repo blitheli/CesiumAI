@@ -1,9 +1,10 @@
-**/bin/
+﻿**/bin/
 **/obj/
 frontend/node_modules/
 frontend/dist/
 frontend/playwright-report/
 frontend/test-results/
-backend/skills/
 *.user
 appsettings.Development.json
+
+.worktrees/
