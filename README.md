@@ -100,6 +100,64 @@ cd frontend && npm run dev
 
 打开 `http://localhost:5173`。
 
+## 生产部署
+
+构建 API 与静态前端：
+
+```bash
+dotnet publish backend/CesiumAI.Api -c Release -o publish/api
+cd frontend
+npm ci
+npm run build
+cd ..
+cp -R frontend/dist publish/frontend
+```
+
+生产构建不设置 `VITE_API_BASE_URL`，浏览器将同源请求 `/api/chat`。推荐由 Nginx、Caddy 或等价网关托管 `publish/frontend`，将 SPA 回退到 `index.html`，并把 `/api/` 与 `/healthz` 反向代理到只在内网监听的 ASP.NET 进程。例如 Nginx：
+
+```nginx
+location / {
+    root /srv/cesiumai/frontend;
+    try_files $uri $uri/ /index.html;
+}
+
+location /api/ {
+    proxy_pass http://127.0.0.1:5088;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+
+location = /healthz {
+    proxy_pass http://127.0.0.1:5088/healthz;
+}
+```
+
+`frontend/dist/cesium` 是运行时必需的 Cesium 静态资源，部署时必须与其余 `dist/` 内容一起复制。
+
+### publish 后的 skills 与启动验证
+
+`Skills:Path` 在启动时仍相对于 API content root 解析，并且必须是相对路径。若从 `publish/api` 启动，可将 skills 放在相邻目录：
+
+```bash
+mkdir -p publish/skills
+cp -R /tmp/astrox-skills/skills/. publish/skills/
+cd publish/api
+export Agent__ApiKey="<your-key>"
+export Skills__Path="../skills"
+export ASPNETCORE_URLS="http://127.0.0.1:5088"
+dotnet CesiumAI.Api.dll
+```
+
+缺少目录、绝对 `Skills__Path` 或无效 Agent/Astrox 配置会在应用启动阶段直接失败，不会延迟到首个聊天请求。进程开始监听后，用健康端点验证启动与反代：
+
+```bash
+curl --fail http://127.0.0.1:5088/healthz
+curl --fail https://cesiumai.example/healthz
+```
+
+两条命令均应返回 HTTP 200 和 `Healthy`。`/healthz` 只表示应用已通过启动配置验证并能够处理请求，不探测外部 LLM 或 Astrox。
+
 ## 验证和测试
 
 在仓库根目录运行后端测试：
@@ -119,7 +177,7 @@ npm run e2e
 npm run lint
 ```
 
-`npm run e2e` 会自行启动 `http://127.0.0.1:5173` 上的 Vite，并拦截 `POST /api/chat`。四个 Playwright 场景使用确定性响应，不访问 live LLM 或 Astrox；它们覆盖清空、添加地面站、更新地面站和添加 SSO/J2 卫星，同时检查 `sceneSummary`、命名实体的 `relevantPackets`、助手文本、持续存在的 Cesium canvas 和浏览器 console error。
+`npm run e2e` 会自行启动 `http://127.0.0.1:5173` 上的 Vite，并拦截 `POST /api/chat`。四个 Playwright 场景使用确定性响应，不访问 live LLM 或 Astrox；它们覆盖清空、添加地面站、更新地面站和添加 SSO/J2 卫星，同时直接检查实际 `CzmlDataSource` 的 position/point/path、Viewer availability 时钟与推进后的位置变化，并验证 `sceneSummary`、命名实体的 `relevantPackets`、持续存在的 Cesium canvas 和浏览器 console error。
 
 首次运行或 Playwright 升级后，如 Chromium 尚未安装：
 
