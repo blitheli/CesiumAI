@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 import { ChatPanel, type UiMessage } from "./ChatPanel";
@@ -64,6 +64,51 @@ it("submits with Enter", async () => {
   await user.type(screen.getByLabelText("消息"), "更新三亚{Enter}");
 
   expect(onSend).toHaveBeenCalledWith("更新三亚");
+});
+
+it("does not submit composing Enter and submits after composition ends", () => {
+  const onSend = vi.fn();
+  renderPanel({ onSend });
+  const textarea = screen.getByLabelText("消息");
+  fireEvent.change(textarea, { target: { value: "三亚" } });
+
+  fireEvent.compositionStart(textarea);
+  fireEvent.keyDown(textarea, {
+    key: "Enter",
+    code: "Enter",
+    isComposing: true,
+  });
+
+  expect(onSend).not.toHaveBeenCalled();
+  expect(textarea).toHaveValue("三亚");
+
+  fireEvent.compositionEnd(textarea);
+  fireEvent.keyDown(textarea, {
+    key: "Enter",
+    code: "Enter",
+    isComposing: false,
+  });
+
+  expect(onSend).toHaveBeenCalledOnce();
+  expect(onSend).toHaveBeenCalledWith("三亚");
+  expect(textarea).toHaveValue("");
+});
+
+it("does not submit legacy IME Enter with keyCode 229", () => {
+  const onSend = vi.fn();
+  renderPanel({ onSend });
+  const textarea = screen.getByLabelText("消息");
+  fireEvent.change(textarea, { target: { value: "北京" } });
+
+  fireEvent.keyDown(textarea, {
+    key: "Enter",
+    code: "Enter",
+    isComposing: false,
+    keyCode: 229,
+  });
+
+  expect(onSend).not.toHaveBeenCalled();
+  expect(textarea).toHaveValue("北京");
 });
 
 it("inserts a newline with Shift+Enter", async () => {
