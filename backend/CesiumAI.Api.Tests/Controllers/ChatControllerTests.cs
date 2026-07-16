@@ -7,6 +7,7 @@ namespace CesiumAI.Api.Tests.Controllers;
 
 public sealed class ChatControllerTests(ApiFactory factory) : IClassFixture<ApiFactory>
 {
+    private readonly ApiFactory _factory = factory;
     private readonly HttpClient _client = factory.CreateClient();
 
     [Fact]
@@ -39,7 +40,10 @@ public sealed class ChatControllerTests(ApiFactory factory) : IClassFixture<ApiF
     [Fact]
     public async Task PostChat_WhenAgentTimesOut_ReturnsGatewayTimeout()
     {
-        HttpResponseMessage response = await _client.PostAsJsonAsync(
+        using HttpClient client = _factory.CreateClient();
+        client.Timeout = TimeSpan.FromSeconds(1);
+
+        HttpResponseMessage response = await client.PostAsJsonAsync(
             "/api/chat",
             CreateRequest("触发超时"));
 
@@ -48,7 +52,19 @@ public sealed class ChatControllerTests(ApiFactory factory) : IClassFixture<ApiF
             await response.Content.ReadAsStreamAsync());
         body.RootElement.GetProperty("error").GetString().Should().Be("agent_timeout");
         body.RootElement.GetProperty("detail").GetString()
-            .Should().Be("Agent request exceeded 120 seconds.");
+            .Should().Be("Agent request exceeded 0.025 seconds.");
+    }
+
+    [Fact]
+    public async Task PostChat_WhenServiceThrowsUnrelatedCancellation_DoesNotReturnAgentTimeout()
+    {
+        HttpResponseMessage response = await _client.PostAsJsonAsync(
+            "/api/chat",
+            CreateRequest("触发无关取消"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+        string body = await response.Content.ReadAsStringAsync();
+        body.Should().NotContain("agent_timeout");
     }
 
     [Fact]
@@ -68,15 +84,35 @@ public sealed class ChatControllerTests(ApiFactory factory) : IClassFixture<ApiF
     [Fact]
     public async Task DevelopmentCors_AllowsViteOrigin()
     {
-        using var request = new HttpRequestMessage(HttpMethod.Options, "/api/chat");
-        request.Headers.Add("Origin", "http://localhost:5173");
-        request.Headers.Add("Access-Control-Request-Method", "POST");
+        using HttpRequestMessage request = CreatePreflightRequest("http://localhost:5173");
 
         HttpResponseMessage response = await _client.SendAsync(request);
 
         response.StatusCode.Should().Be(HttpStatusCode.NoContent);
         response.Headers.GetValues("Access-Control-Allow-Origin")
             .Should().ContainSingle("http://localhost:5173");
+    }
+
+    [Fact]
+    public async Task DevelopmentCors_DoesNotAllowOtherOrigins()
+    {
+        using HttpRequestMessage request = CreatePreflightRequest("http://localhost:5174");
+
+        HttpResponseMessage response = await _client.SendAsync(request);
+
+        response.Headers.Contains("Access-Control-Allow-Origin").Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Production_DoesNotEnableCors()
+    {
+        using var productionFactory = new ApiFactory("Production");
+        using HttpClient client = productionFactory.CreateClient();
+        using HttpRequestMessage request = CreatePreflightRequest("http://localhost:5173");
+
+        HttpResponseMessage response = await client.SendAsync(request);
+
+        response.Headers.Contains("Access-Control-Allow-Origin").Should().BeFalse();
     }
 
     [Fact]
@@ -98,4 +134,12 @@ public sealed class ChatControllerTests(ApiFactory factory) : IClassFixture<ApiF
             },
             relevantPackets = Array.Empty<object>()
         };
+
+    private static HttpRequestMessage CreatePreflightRequest(string origin)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Options, "/api/chat");
+        request.Headers.Add("Origin", origin);
+        request.Headers.Add("Access-Control-Request-Method", "POST");
+        return request;
+    }
 }

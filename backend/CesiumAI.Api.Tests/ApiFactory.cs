@@ -1,3 +1,4 @@
+using CesiumAI.Api.Configuration;
 using CesiumAI.Api.Models;
 using CesiumAI.Api.Services;
 using Microsoft.AspNetCore.Builder;
@@ -7,19 +8,35 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 
 namespace CesiumAI.Api.Tests;
 
 public sealed class ApiFactory : WebApplicationFactory<Program>
 {
+    private static readonly TimeSpan IntegrationTimeout = TimeSpan.FromMilliseconds(25);
+    private readonly string _environment;
+
+    public ApiFactory()
+        : this(Environments.Development)
+    {
+    }
+
+    internal ApiFactory(string environment)
+    {
+        _environment = environment;
+    }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        builder.UseEnvironment("Development");
+        builder.UseEnvironment(_environment);
         builder.ConfigureAppConfiguration(configuration =>
         {
             configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["Agent:ApiKey"] = "integration-test-key"
+                ["Agent:ApiKey"] = "integration-test-key",
+                [$"{ChatEndpointOptions.SectionName}:Timeout"] =
+                    IntegrationTimeout.ToString("c")
             });
         });
         builder.ConfigureTestServices(services =>
@@ -32,7 +49,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
 
     private sealed class FakeChatService : IChatService
     {
-        public Task<ChatResponse> ChatAsync(
+        public async Task<ChatResponse> ChatAsync(
             ChatRequest request,
             CancellationToken cancellationToken)
         {
@@ -40,14 +57,20 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
 
             if (request.Message == "触发超时")
             {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                throw new InvalidOperationException("The timeout delay unexpectedly completed.");
+            }
+
+            if (request.Message == "触发无关取消")
+            {
+                await Task.Delay(IntegrationTimeout * 4, CancellationToken.None);
                 throw new OperationCanceledException();
             }
 
-            return Task.FromResult(
-                new ChatResponse(
-                    "test-session",
-                    "已清空场景。",
-                    [new ClearSceneOp()]));
+            return new ChatResponse(
+                "test-session",
+                "已清空场景。",
+                [new ClearSceneOp()]);
         }
     }
 

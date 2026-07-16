@@ -11,6 +11,13 @@ const string AstroxRawClient = "AstroxRaw";
 
 builder.Services.AddControllers();
 builder.Services
+    .AddOptions<ChatEndpointOptions>()
+    .Bind(builder.Configuration.GetSection(ChatEndpointOptions.SectionName))
+    .Validate(
+        options => options.Timeout > TimeSpan.Zero,
+        "ChatEndpoint:Timeout must be greater than zero.")
+    .ValidateOnStart();
+builder.Services
     .AddOptions<AgentOptions>()
     .Bind(builder.Configuration.GetSection(AgentOptions.SectionName))
     .Validate(
