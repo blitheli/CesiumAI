@@ -48,10 +48,8 @@ public class OrbitScenarioServiceTests
                       "IsSuccess": true,
                       "Message": "ok",
                       "Position": {
-                        "cartesianVelocity": {
-                          "epoch": "2026-07-16T00:00:00.000Z",
-                          "cartesian": [0, 1, 2, 3, 4, 5]
-                        }
+                        "epoch": "2026-07-16T00:00:00.000Z",
+                        "cartesianVelocity": [0, 1, 2, 3, 4, 5, 6]
                       },
                       "Period": 6000
                     }
@@ -86,12 +84,12 @@ public class OrbitScenarioServiceTests
         root.GetProperty("availability").GetString().Should().Be("2026-07-16T00:00:00.000Z/2026-07-17T00:00:00.000Z");
 
         JsonElement position = root.GetProperty("position");
-        position.GetProperty("cartesianVelocity").GetProperty("epoch").GetString().Should().Be("2026-07-16T00:00:00.000Z");
-        position.GetProperty("cartesianVelocity").GetProperty("cartesian")
+        position.GetProperty("epoch").GetString().Should().Be("2026-07-16T00:00:00.000Z");
+        position.GetProperty("cartesianVelocity")
             .EnumerateArray()
             .Select(value => value.GetDouble())
             .Should()
-            .Equal([0, 1, 2, 3, 4, 5]);
+            .Equal([0, 1, 2, 3, 4, 5, 6]);
 
         JsonElement point = root.GetProperty("point");
         point.GetProperty("pixelSize").GetInt32().Should().Be(8);
@@ -193,6 +191,51 @@ public class OrbitScenarioServiceTests
             .WithMessage("*Propagator/J2*propagation failed*");
         packet.HasValue.Should().BeFalse();
         requestedPaths.Should().Equal("/OrbitWizard/SSO", "/Propagator/J2");
+    }
+
+    [Fact]
+    public async Task CreateSsoJ2PacketAsync_DoesNotReturnPacket_WhenSuccessfulJ2PayloadIsMalformed()
+    {
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            string response = request.RequestUri!.AbsolutePath == "/OrbitWizard/SSO"
+                ? """
+                  {
+                    "IsSuccess": true,
+                    "Message": "ok",
+                    "Elements_Inertial": {
+                      "SemimajorAxis": 7278136.3,
+                      "Eccentricity": 0.001,
+                      "Inclination": 98.9,
+                      "ArgumentOfPeriapsis": 0,
+                      "RightAscensionOfAscendingNode": 0,
+                      "TrueAnomaly": 0,
+                      "GravitationalParameter": 398600441800000
+                    }
+                  }
+                  """
+                : """
+                  {
+                    "IsSuccess": true,
+                    "Message": "ok",
+                    "Position": {},
+                    "Period": 6000
+                  }
+                  """;
+            return Task.FromResult(
+                StubHttpMessageHandler.Json(HttpStatusCode.OK, response));
+        });
+        var service = new OrbitScenarioService(CreateAstroxClient(handler));
+        JsonElement? packet = null;
+
+        Func<Task> act = async () =>
+            packet = await service.CreateSsoJ2PacketAsync(
+                CreateScenario(),
+                CancellationToken.None);
+
+        await act.Should().ThrowAsync<AstroxException>()
+            .WithMessage("*Propagator/J2*invalid*payload*");
+        packet.Should().BeNull();
     }
 
     [Theory]
