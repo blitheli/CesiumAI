@@ -1,0 +1,109 @@
+using CesiumAI.Api.Astrox;
+using CesiumAI.Api.Configuration;
+using CesiumAI.Api.Tools;
+using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Options;
+using OpenAI;
+using OpenAI.Chat;
+using System.ClientModel;
+
+namespace CesiumAI.Api.Services;
+
+public sealed class AgentFactory : IAgentRuntimeFactory, IDisposable
+{
+    private readonly AgentOptions _agentOptions;
+    private readonly IOrbitScenarioService _orbitScenarioService;
+    private readonly AstroxRawTools _rawTools;
+    private readonly ILoggerFactory _loggerFactory;
+    private readonly AgentSkillsProvider _skillsProvider;
+
+    public AgentFactory(
+        IOptions<AgentOptions> agentOptions,
+        IOptions<SkillsOptions> skillsOptions,
+        IHostEnvironment hostEnvironment,
+        IOrbitScenarioService orbitScenarioService,
+        AstroxRawTools rawTools,
+        ILoggerFactory loggerFactory)
+    {
+        ArgumentNullException.ThrowIfNull(agentOptions);
+        ArgumentNullException.ThrowIfNull(skillsOptions);
+        ArgumentNullException.ThrowIfNull(hostEnvironment);
+
+        _agentOptions = agentOptions.Value;
+        _orbitScenarioService = orbitScenarioService
+            ?? throw new ArgumentNullException(nameof(orbitScenarioService));
+        _rawTools = rawTools ?? throw new ArgumentNullException(nameof(rawTools));
+        _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
+
+        string skillsPath = ResolveSkillsPath(skillsOptions.Value.Path, hostEnvironment.ContentRootPath);
+        if (!Directory.Exists(skillsPath))
+        {
+            throw new DirectoryNotFoundException(
+                $"Skills directory '{skillsPath}' does not exist. Configure Skills:Path relative to the application content root or as an absolute path.");
+        }
+
+        _skillsProvider = new AgentSkillsProvider(
+            skillsPath,
+            loggerFactory: _loggerFactory);
+    }
+
+    public async Task<AgentRuntime> CreateAsync(
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            throw new ArgumentException("Session id cannot be blank.", nameof(sessionId));
+        }
+
+        var sceneOpSink = new TurnSceneOpSink();
+        var sceneTools = new SceneTools(sceneOpSink, _orbitScenarioService);
+        List<AITool> tools =
+        [
+            AIFunctionFactory.Create(sceneTools.ClearScene),
+            AIFunctionFactory.Create(sceneTools.UpsertFacility),
+            AIFunctionFactory.Create(sceneTools.DeleteEntity),
+            AIFunctionFactory.Create(sceneTools.AddSatelliteJ2),
+            AIFunctionFactory.Create(_rawTools.HttpGet),
+            AIFunctionFactory.Create(_rawTools.HttpPost)
+        ];
+
+        var client = new OpenAIClient(
+            new ApiKeyCredential(_agentOptions.ApiKey),
+            new OpenAIClientOptions { Endpoint = _agentOptions.Endpoint });
+
+        AIAgent agent = client.GetChatClient(_agentOptions.Model).AsAIAgent(
+            new ChatClientAgentOptions
+            {
+                Name = "SpaceAgent",
+                Description = "航天任务设计与 Cesium 场景助手",
+                ChatOptions = new ChatOptions
+                {
+                    Instructions = AgentInstructions.Text,
+                    Tools = tools
+                },
+                AIContextProviders = [_skillsProvider]
+            },
+            loggerFactory: _loggerFactory);
+
+        AgentSession session = await agent.CreateSessionAsync(cancellationToken);
+        return new AgentRuntime(agent, session, sceneOpSink);
+    }
+
+    public void Dispose() => _skillsProvider.Dispose();
+
+    private static string ResolveSkillsPath(string configuredPath, string contentRootPath)
+    {
+        if (string.IsNullOrWhiteSpace(configuredPath))
+        {
+            throw new ArgumentException("Skills:Path cannot be blank.", nameof(configuredPath));
+        }
+
+        string combinedPath = Path.IsPathRooted(configuredPath)
+            ? configuredPath
+            : Path.Combine(contentRootPath, configuredPath);
+
+        return Path.GetFullPath(combinedPath);
+    }
+}
