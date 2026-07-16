@@ -1,4 +1,6 @@
 using System.Net;
+using System.Net.Sockets;
+using System.Text;
 using CesiumAI.Api.Configuration;
 using CesiumAI.Api.Tests.TestSupport;
 using CesiumAI.Api.Tools;
@@ -9,6 +11,44 @@ namespace CesiumAI.Api.Tests.Tools;
 
 public class AstroxRawToolsTests
 {
+    [Fact]
+    public async Task HttpGet_PublicTransportReturnsRedirectWithoutFollowingExternalLocation()
+    {
+        using var astroxServer = new TcpListener(IPAddress.Loopback, 0);
+        using var externalServer = new TcpListener(IPAddress.Any, 0);
+        astroxServer.Start();
+        externalServer.Start();
+        int astroxRequests = 0;
+        int externalRequests = 0;
+        using var targetCancellation = new CancellationTokenSource();
+
+        int externalPort = ((IPEndPoint)externalServer.LocalEndpoint).Port;
+        var externalUri = new Uri($"http://127.0.0.2:{externalPort}/");
+        Task astroxResponse = ServeOneAsync(
+            astroxServer,
+            () => Interlocked.Increment(ref astroxRequests),
+            $"HTTP/1.1 302 Found\r\nLocation: {externalUri}outside\r\nContent-Type: text/plain\r\nContent-Length: 10\r\nConnection: close\r\n\r\nredirected",
+            CancellationToken.None);
+        Task externalResponse = ServeOneAsync(
+            externalServer,
+            () => Interlocked.Increment(ref externalRequests),
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 8\r\nConnection: close\r\n\r\nfollowed",
+            targetCancellation.Token);
+        var options = Options.Create(new AstroxOptions { BaseUrl = ServerUri(astroxServer) });
+        using var tools = new AstroxRawTools(options);
+
+        AstroxRawResponse response = await tools.HttpGet("/redirect", CancellationToken.None);
+        await astroxResponse;
+        await Task.Delay(50);
+        targetCancellation.Cancel();
+        await externalResponse;
+
+        response.StatusCode.Should().Be(302);
+        response.Body.Should().Be("redirected");
+        astroxRequests.Should().Be(1);
+        externalRequests.Should().Be(0);
+    }
+
     [Fact]
     public void Constructor_RejectsHttpClientForNonAstroxOrigin()
     {
@@ -32,6 +72,9 @@ public class AstroxRawToolsTests
     [InlineData("https://other.example/ssc")]
     [InlineData("/safe/../admin")]
     [InlineData("/safe/%2e%2e/admin")]
+    [InlineData("/safe/%2e%2e%5cadmin")]
+    [InlineData("/safe/%252e%252e%255cadmin")]
+    [InlineData("/safe/%2e/admin")]
     [InlineData("ssc?sscName=ISS")]
     [InlineData("//other.example/ssc")]
     [InlineData("/safe\\..\\admin")]
@@ -99,5 +142,41 @@ public class AstroxRawToolsTests
         });
 
         return new AstroxRawTools(client, options);
+    }
+
+    private static Uri ServerUri(TcpListener listener)
+    {
+        var endpoint = (IPEndPoint)listener.LocalEndpoint;
+        return new Uri($"http://127.0.0.1:{endpoint.Port}/");
+    }
+
+    private static async Task ServeOneAsync(
+        TcpListener listener,
+        Action onRequest,
+        string response,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using TcpClient client = await listener.AcceptTcpClientAsync(cancellationToken);
+            onRequest();
+            await using NetworkStream stream = client.GetStream();
+            using var reader = new StreamReader(
+                stream,
+                Encoding.ASCII,
+                detectEncodingFromByteOrderMarks: false,
+                bufferSize: 1024,
+                leaveOpen: true);
+
+            while (!string.IsNullOrEmpty(await reader.ReadLineAsync(cancellationToken)))
+            {
+            }
+
+            byte[] bytes = Encoding.ASCII.GetBytes(response);
+            await stream.WriteAsync(bytes, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
     }
 }

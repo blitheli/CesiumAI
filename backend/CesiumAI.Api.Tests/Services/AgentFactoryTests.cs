@@ -6,6 +6,7 @@ using CesiumAI.Api.Services;
 using CesiumAI.Api.Tests.TestSupport;
 using CesiumAI.Api.Tools;
 using FluentAssertions;
+using Microsoft.Agents.AI;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -15,6 +16,16 @@ namespace CesiumAI.Api.Tests.Services;
 
 public class AgentFactoryTests
 {
+    [Fact]
+    public void SkillsProviderOptions_DisableApprovalOnlyForReadOnlySkillTools()
+    {
+        AgentSkillsProviderOptions options = AgentFactory.CreateSkillsProviderOptions();
+
+        options.DisableLoadSkillApproval.Should().BeTrue();
+        options.DisableReadSkillResourceApproval.Should().BeTrue();
+        options.DisableRunSkillScriptApproval.Should().BeFalse();
+    }
+
     [Fact]
     public void Instructions_ContainEveryRequiredSafetyPolicy()
     {
@@ -34,12 +45,33 @@ public class AgentFactoryTests
         {
             Action act = () => CreateFactory(root, "../missing-skills");
 
-            act.Should().Throw<DirectoryNotFoundException>()
-                .WithMessage("*Skills directory*missing-skills*");
+            DirectoryNotFoundException exception =
+                act.Should().Throw<DirectoryNotFoundException>().Which;
+            string expectedPath = Path.GetFullPath(Path.Combine(root, "../missing-skills"));
+            exception.Message.Should().Be(
+                $"Skills directory '{expectedPath}' does not exist. Configure Skills:Path as a path relative to the application content root.");
         }
         finally
         {
             Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Constructor_RejectsAbsoluteSkillsPath()
+    {
+        string contentRoot = Directory.CreateTempSubdirectory().FullName;
+
+        try
+        {
+            Action act = () => CreateFactory(contentRoot, contentRoot);
+
+            act.Should().Throw<ArgumentException>()
+                .WithMessage("*Skills:Path*relative*content root*");
+        }
+        finally
+        {
+            Directory.Delete(contentRoot, recursive: true);
         }
     }
 

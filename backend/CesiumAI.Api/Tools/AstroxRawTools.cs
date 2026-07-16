@@ -8,12 +8,26 @@ namespace CesiumAI.Api.Tools;
 
 public sealed record AstroxRawResponse(int StatusCode, string Body);
 
-public sealed class AstroxRawTools
+public sealed class AstroxRawTools : IDisposable
 {
     private readonly HttpClient _httpClient;
     private readonly Uri _baseUri;
+    private readonly bool _disposeHttpClient;
 
-    public AstroxRawTools(HttpClient httpClient, IOptions<AstroxOptions> options)
+    public AstroxRawTools(IOptions<AstroxOptions> options)
+        : this(CreateProductionHttpClient(options), options, disposeHttpClient: true)
+    {
+    }
+
+    internal AstroxRawTools(HttpClient httpClient, IOptions<AstroxOptions> options)
+        : this(httpClient, options, disposeHttpClient: false)
+    {
+    }
+
+    private AstroxRawTools(
+        HttpClient httpClient,
+        IOptions<AstroxOptions> options,
+        bool disposeHttpClient)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
         ArgumentNullException.ThrowIfNull(options);
@@ -31,6 +45,7 @@ public sealed class AstroxRawTools
 
         httpClient.BaseAddress ??= _baseUri;
         _httpClient = httpClient;
+        _disposeHttpClient = disposeHttpClient;
     }
 
     [Description("Send a GET request to a path on the configured Astrox service.")]
@@ -60,6 +75,14 @@ public sealed class AstroxRawTools
         return new AstroxRawResponse((int)response.StatusCode, responseBody);
     }
 
+    public void Dispose()
+    {
+        if (_disposeHttpClient)
+        {
+            _httpClient.Dispose();
+        }
+    }
+
     private Uri ValidateAndResolvePath(string path)
     {
         if (string.IsNullOrWhiteSpace(path)
@@ -72,21 +95,7 @@ public sealed class AstroxRawTools
 
         int suffixStart = path.IndexOfAny(['?', '#']);
         string pathOnly = suffixStart < 0 ? path : path[..suffixStart];
-        string decodedPath;
-
-        try
-        {
-            decodedPath = Uri.UnescapeDataString(pathOnly);
-        }
-        catch (UriFormatException ex)
-        {
-            throw new ArgumentException("Astrox path contains invalid escaping.", nameof(path), ex);
-        }
-
-        if (decodedPath.Split('/').Any(segment => segment is ".."))
-        {
-            throw new ArgumentException("Astrox path traversal is not allowed.", nameof(path));
-        }
+        ValidateDecodedPath(pathOnly, nameof(path));
 
         var requestUri = new Uri(_baseUri, path);
         if (!HasSameOrigin(requestUri, _baseUri))
@@ -97,8 +106,57 @@ public sealed class AstroxRawTools
         return requestUri;
     }
 
+    private static void ValidateDecodedPath(string path, string parameterName)
+    {
+        const int maximumDecodeRounds = 4;
+        string current = path;
+
+        for (int round = 0; round <= maximumDecodeRounds; round++)
+        {
+            if (current.Contains('\\')
+                || current.StartsWith("//", StringComparison.Ordinal)
+                || current.Split(['/', '\\']).Any(segment => segment is "." or ".."))
+            {
+                throw new ArgumentException(
+                    "Astrox path cannot contain backslashes or dot segments.",
+                    parameterName);
+            }
+
+            string decoded;
+            try
+            {
+                decoded = Uri.UnescapeDataString(current);
+            }
+            catch (UriFormatException ex)
+            {
+                throw new ArgumentException("Astrox path contains invalid escaping.", parameterName, ex);
+            }
+
+            if (string.Equals(decoded, current, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            current = decoded;
+        }
+
+        throw new ArgumentException(
+            "Astrox path exceeds the supported URL-decoding depth.",
+            parameterName);
+    }
+
     private static bool HasSameOrigin(Uri left, Uri right) =>
         string.Equals(left.Scheme, right.Scheme, StringComparison.OrdinalIgnoreCase)
         && string.Equals(left.Host, right.Host, StringComparison.OrdinalIgnoreCase)
         && left.Port == right.Port;
+
+    private static HttpClient CreateProductionHttpClient(IOptions<AstroxOptions> options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        return new HttpClient(new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false
+        });
+    }
 }
