@@ -1,7 +1,9 @@
+using System.Net;
 using CesiumAI.Api.Astrox;
 using CesiumAI.Api.Configuration;
 using CesiumAI.Api.Services;
 using CesiumAI.Api.Tools;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -53,6 +55,29 @@ builder.Services
     .Bind(builder.Configuration.GetSection(SkillsOptions.SectionName))
     .ValidateOnStart();
 builder.Services.AddSingleton<IValidateOptions<SkillsOptions>, SkillsOptionsValidator>();
+builder.Services
+    .AddOptions<ReverseProxyOptions>()
+    .Bind(builder.Configuration.GetSection(ReverseProxyOptions.SectionName))
+    .Validate(
+        options => options.KnownProxies is { Length: > 0 }
+            && options.KnownProxies.All(
+                proxy => IPAddress.TryParse(proxy, out _)),
+        "ReverseProxy:KnownProxies must contain only trusted proxy IP addresses.")
+    .ValidateOnStart();
+builder.Services
+    .AddOptions<ForwardedHeadersOptions>()
+    .Configure<IOptions<ReverseProxyOptions>>((options, reverseProxyOptions) =>
+    {
+        options.ForwardedHeaders = ForwardedHeaders.XForwardedProto;
+        options.ForwardLimit = 1;
+        options.KnownIPNetworks.Clear();
+        options.KnownProxies.Clear();
+
+        foreach (string proxy in reverseProxyOptions.Value.KnownProxies)
+        {
+            options.KnownProxies.Add(IPAddress.Parse(proxy));
+        }
+    });
 
 builder.Services
     .AddHttpClient<IAstroxClient, AstroxClient>((services, client) =>
@@ -95,6 +120,7 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
+app.UseForwardedHeaders();
 app.UseHttpsRedirection();
 
 if (app.Environment.IsDevelopment())

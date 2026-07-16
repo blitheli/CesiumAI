@@ -130,10 +130,20 @@ location /api/ {
 
 location = /healthz {
     proxy_pass http://127.0.0.1:5088/healthz;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
 }
 ```
 
 `frontend/dist/cesium` 是运行时必需的 Cesium 静态资源，部署时必须与其余 `dist/` 内容一起复制。
+
+API 只接受一个 `X-Forwarded-Proto`，且只信任 `ReverseProxy:KnownProxies` 中的代理源 IP；默认值为同机 Nginx 使用的 `127.0.0.1` 和 `::1`。如果反代运行在独立容器或主机，必须替换为后端实际看到的代理源 IP，例如：
+
+```bash
+export ReverseProxy__KnownProxies__0="10.0.0.12"
+```
+
+不要加入不受控制的客户端网段或清空受信代理限制，否则客户端可伪造 scheme。Forwarded Headers Middleware 在 HTTPS redirect 前运行，因此受信代理传入的 `https` scheme 不会被再次重定向。
 
 ### publish 后的 skills 与启动验证
 

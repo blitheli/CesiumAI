@@ -2,6 +2,13 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using FluentAssertions;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.HttpsPolicy;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace CesiumAI.Api.Tests.Controllers;
 
@@ -129,6 +136,49 @@ public sealed class ChatControllerTests(ApiFactory factory) : IClassFixture<ApiF
         using HttpResponseMessage response = await _client.GetAsync("/healthz");
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public void ForwardedHeaders_AreRestrictedToOneProtoHeaderFromLoopbackProxies()
+    {
+        ForwardedHeadersOptions options = _factory.Services
+            .GetRequiredService<IOptions<ForwardedHeadersOptions>>()
+            .Value;
+
+        options.ForwardedHeaders.Should().Be(ForwardedHeaders.XForwardedProto);
+        options.ForwardLimit.Should().Be(1);
+        options.KnownIPNetworks.Should().BeEmpty();
+        options.KnownProxies.Should().BeEquivalentTo(
+            new[] { IPAddress.Loopback, IPAddress.IPv6Loopback });
+    }
+
+    [Fact]
+    public async Task ForwardedHttpsScheme_IsAppliedBeforeHttpsRedirection()
+    {
+        using WebApplicationFactory<Program> factory =
+            _factory.WithWebHostBuilder(builder =>
+                builder.ConfigureTestServices(services =>
+                    services.Configure<HttpsRedirectionOptions>(
+                        options => options.HttpsPort = 443)));
+        using HttpClient client = factory.CreateClient(
+            new WebApplicationFactoryClientOptions
+            {
+                AllowAutoRedirect = false,
+                BaseAddress = new Uri("http://localhost")
+            });
+
+        using HttpResponseMessage directResponse =
+            await client.GetAsync("/healthz");
+        directResponse.StatusCode.Should().Be(HttpStatusCode.TemporaryRedirect);
+
+        using var forwardedRequest =
+            new HttpRequestMessage(HttpMethod.Get, "/healthz");
+        forwardedRequest.Headers.Add("X-Forwarded-Proto", "https");
+        using HttpResponseMessage forwardedResponse =
+            await client.SendAsync(forwardedRequest);
+
+        forwardedResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        forwardedResponse.Headers.Location.Should().BeNull();
     }
 
     private static object CreateRequest(string message) =>
