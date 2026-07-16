@@ -410,8 +410,7 @@ OpenAIClient(Kimi/Moonshot endpoint)
 2. **场景持久化**：`sceneDocument` 存 localStorage / 后端按 projectId
 3. **更多 Tools**：可见性、地面站网、星座批量生成
 4. **sceneOps 校验器**：JSON Schema 校验 packet 再返回前端
-5. **sceneOps 校验器**：JSON Schema 校验 packet 再返回前端
-6. **选中实体 → 自动进 relevantPackets**（增强 A2）
+5. **选中实体 → 自动进 relevantPackets**（增强 A2）
 
 ---
 
