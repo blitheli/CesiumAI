@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test": "vitest",
+    "typecheck": "tsc -b",
+    "test": "npm run typecheck && vitest",
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {

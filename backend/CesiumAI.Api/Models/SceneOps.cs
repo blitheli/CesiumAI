@@ -10,5 +10,9 @@ namespace CesiumAI.Api.Models;
 public abstract record SceneOp;
 
 public sealed record ClearSceneOp : SceneOp;
-public sealed record UpsertSceneOp(IReadOnlyList<JsonElement> Packets) : SceneOp;
-public sealed record DeleteSceneOp(IReadOnlyList<string> Ids) : SceneOp;
+
+public sealed record UpsertSceneOp(
+    [property: JsonPropertyName("packets")] IReadOnlyList<JsonElement> Packets) : SceneOp;
+
+public sealed record DeleteSceneOp(
+    [property: JsonPropertyName("ids")] IReadOnlyList<string> Ids) : SceneOp;

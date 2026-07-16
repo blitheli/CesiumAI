@@ -1,4 +1,11 @@
-import type { ChatResponse } from "./chat";
+import { expectTypeOf } from "vitest";
+import type {
+  ChatResponse,
+  ClearSceneOp,
+  DeleteSceneOp,
+  SceneOp,
+  UpsertSceneOp,
+} from "./chat";
 
 it("accepts the wire-level SceneOp union", () => {
   const response = {
@@ -16,4 +23,15 @@ it("accepts the wire-level SceneOp union", () => {
     "upsert",
     "delete",
   ]);
+});
+
+it("binds ChatResponse and SceneOp types at compile time", () => {
+  expectTypeOf<ClearSceneOp>().toEqualTypeOf<{ op: "clear" }>();
+  expectTypeOf<UpsertSceneOp>().toEqualTypeOf<{
+    op: "upsert";
+    packets: Array<{ id: string } & Record<string, unknown>>;
+  }>();
+  expectTypeOf<DeleteSceneOp>().toEqualTypeOf<{ op: "delete"; ids: string[] }>();
+  expectTypeOf<SceneOp["op"]>().toEqualTypeOf<"clear" | "upsert" | "delete">();
+  expectTypeOf<ChatResponse["sceneOps"]>().toEqualTypeOf<SceneOp[]>();
 });
