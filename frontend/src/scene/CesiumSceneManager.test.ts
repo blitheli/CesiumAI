@@ -922,6 +922,14 @@ it("按序 await 相机控制器，失败时停止后续操作", async () => {
     onSceneCleared: vi.fn(),
     onEntitiesDeleted: vi.fn(),
     destroy: vi.fn(),
+    getDiagnostics: vi.fn(() => ({
+      trackedEntityId: null,
+      orbitActive: false,
+      orbitTargetId: null,
+      orbitHeadingDegrees: null,
+      headingDegrees: null,
+      positionWC: null,
+    })),
   };
   const manager = new CesiumSceneManager(
     createEmpty,
@@ -966,6 +974,14 @@ it("相机 flyTo 失败时 SceneManager 停止后续操作", async () => {
     onSceneCleared: vi.fn(),
     onEntitiesDeleted: vi.fn(),
     destroy: vi.fn(),
+    getDiagnostics: vi.fn(() => ({
+      trackedEntityId: null,
+      orbitActive: false,
+      orbitTargetId: null,
+      orbitHeadingDegrees: null,
+      headingDegrees: null,
+      positionWC: null,
+    })),
   };
   const manager = new CesiumSceneManager(
     createEmpty,
@@ -997,6 +1013,14 @@ it("clear/delete/destroy 时通知相机控制器清理", async () => {
     onSceneCleared: vi.fn(),
     onEntitiesDeleted: vi.fn(),
     destroy: vi.fn(),
+    getDiagnostics: vi.fn(() => ({
+      trackedEntityId: null,
+      orbitActive: false,
+      orbitTargetId: null,
+      orbitHeadingDegrees: null,
+      headingDegrees: null,
+      positionWC: null,
+    })),
   };
   const manager = new CesiumSceneManager(
     createEmpty,

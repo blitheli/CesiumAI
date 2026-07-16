@@ -99,6 +99,8 @@ builder.Services
     });
 
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<ICzmlPositionValidator, CzmlPositionValidator>();
+builder.Services.AddSingleton<ISceneStyleValidator, SceneStyleValidator>();
 builder.Services.AddSingleton<IOrbitScenarioService, OrbitScenarioService>();
 builder.Services.AddSingleton<AstroxRawTools>(services =>
     new AstroxRawTools(

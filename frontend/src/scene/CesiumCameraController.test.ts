@@ -130,6 +130,10 @@ function createAdapter(options?: {
       ...currentLookAt,
     }),
   );
+  let cameraPositionWC = { x: 100, y: 200, z: 300 };
+  let cameraHeadingDegrees = 0;
+  const getCameraPositionWC = vi.fn(() => ({ ...cameraPositionWC }));
+  const getCameraHeadingDegrees = vi.fn(() => cameraHeadingDegrees);
   const setTrackedEntity = vi.fn((entity?: CameraEntityAdapter) => {
     tracked = entity;
   });
@@ -145,8 +149,14 @@ function createAdapter(options?: {
     moveRight,
     moveUp,
     moveDown,
-    lookLeft,
-    lookRight,
+    lookLeft: (amount) => {
+      lookLeft(amount);
+      cameraHeadingDegrees -= CesiumMath.toDegrees(amount);
+    },
+    lookRight: (amount) => {
+      lookRight(amount);
+      cameraHeadingDegrees += CesiumMath.toDegrees(amount);
+    },
     lookUp,
     lookDown,
     twistLeft,
@@ -171,9 +181,23 @@ function createAdapter(options?: {
         }
       };
     },
-    lookAtTransform,
+    lookAtTransform: (
+      transform: unknown,
+      offset: { heading: number; pitch: number; range: number },
+    ) => {
+      lookAtTransform(transform, offset);
+      // 用 heading/range 合成可观测的诊断坐标，便于断言只读 diagnostics。
+      cameraPositionWC = {
+        x: offset.heading * 1000,
+        y: offset.pitch * 1000,
+        z: offset.range,
+      };
+      cameraHeadingDegrees = CesiumMath.toDegrees(offset.heading);
+    },
     eastNorthUpToFixedFrame,
     getLookAtHeadingPitchRange,
+    getCameraPositionWC,
+    getCameraHeadingDegrees,
     getEntityById: (id) => entities.get(id),
   };
 

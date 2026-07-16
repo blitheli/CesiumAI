@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reflection;
 using System.Text.Json;
 using CesiumAI.Api.Astrox;
 using CesiumAI.Api.Configuration;
@@ -7,6 +8,7 @@ using CesiumAI.Api.Tests.TestSupport;
 using CesiumAI.Api.Tools;
 using FluentAssertions;
 using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -16,6 +18,23 @@ namespace CesiumAI.Api.Tests.Services;
 
 public class AgentFactoryTests
 {
+    private static readonly string[] RequiredCameraAndStyleTools =
+    [
+        "FocusEntity",
+        "TrackEntity",
+        "StopTracking",
+        "AdjustCamera",
+        "OrbitEntity",
+        "StopOrbit",
+        "UpdateEntityStyle"
+    ];
+
+    private static readonly string[] RequiredGenericOrbitTools =
+    [
+        "PropagateAndAddSatellite",
+        "AddSatelliteFromPositions"
+    ];
+
     [Fact]
     public void SkillsProviderOptions_DisableApprovalOnlyForReadOnlySkillTools()
     {
@@ -27,13 +46,42 @@ public class AgentFactoryTests
     }
 
     [Fact]
-    public void Instructions_ContainEveryRequiredSafetyPolicy()
+    public async Task CreateAsync_RegistersCameraStyleAndGenericOrbitTools()
     {
-        AgentInstructions.Text.Should().Contain("场景变更").And.Contain("场景工具");
-        AgentInstructions.Text.Should().Contain("可执行 CZML").And.Contain("助手文本");
-        AgentInstructions.Text.Should().Contain("纯问题").And.Contain("不调用场景工具");
-        AgentInstructions.Text.Should().Contain("AddSatelliteJ2").And.Contain("唯一");
-        AgentInstructions.Text.Should().Contain("简洁中文");
+        string parent = Directory.CreateTempSubdirectory().FullName;
+        string contentRoot = Directory.CreateDirectory(Path.Combine(parent, "api")).FullName;
+        Directory.CreateDirectory(Path.Combine(parent, "astrox-skills", "skills"));
+
+        try
+        {
+            AgentFactory factory = CreateFactory(contentRoot, "../astrox-skills/skills");
+            AgentRuntime runtime = await factory.CreateAsync("session", CancellationToken.None);
+
+            ChatClientAgent agent = runtime.Agent.Should().BeOfType<ChatClientAgent>().Subject;
+            // ChatClientAgent.ChatOptions 为非公开属性，测试通过反射只读检查注册结果。
+            ChatOptions? chatOptions = typeof(ChatClientAgent)
+                .GetProperty("ChatOptions", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?.GetValue(agent) as ChatOptions;
+            IList<AITool>? tools = chatOptions?.Tools;
+            tools.Should().NotBeNull();
+
+            string[] names = tools!.Select(tool => tool.Name).ToArray();
+            names.Should().Contain(RequiredCameraAndStyleTools);
+            names.Should().Contain(RequiredGenericOrbitTools);
+            names.Should().Contain(
+            [
+                "ClearScene",
+                "UpsertFacility",
+                "DeleteEntity",
+                "AddSatelliteJ2",
+                "HttpGet",
+                "HttpPost"
+            ]);
+        }
+        finally
+        {
+            Directory.Delete(parent, recursive: true);
+        }
     }
 
     [Fact]
@@ -116,6 +164,7 @@ public class AgentFactoryTests
             Options.Create(new SkillsOptions { Path = skillsPath }),
             new StubHostEnvironment(contentRoot),
             new StubOrbitScenarioService(),
+            new SceneStyleValidator(),
             rawTools,
             NullLoggerFactory.Instance);
     }

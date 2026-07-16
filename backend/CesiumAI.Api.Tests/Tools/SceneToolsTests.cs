@@ -428,6 +428,22 @@ public class SceneToolsTests
     }
 
     [Fact]
+    public void AdjustCamera_Description_DocumentsPositiveRightNegativeLeftHeading()
+    {
+        System.ComponentModel.DescriptionAttribute? description =
+            typeof(SceneTools)
+                .GetMethod(nameof(SceneTools.AdjustCamera))
+                ?.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
+                .Cast<System.ComponentModel.DescriptionAttribute>()
+                .SingleOrDefault();
+
+        description.Should().NotBeNull();
+        description!.Description.Should().Contain("正").And.Contain("右");
+        description.Description.Should().Contain("负").And.Contain("左");
+        description.Description.Should().Contain("headingDegrees");
+    }
+
+    [Fact]
     public void AdjustCamera_Rotate_RejectsNonFiniteAnglesOrAmount_WithoutQueuingOperations()
     {
         var collector = new SceneOpCollector();

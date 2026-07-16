@@ -26,13 +26,26 @@ type SceneDiagnostics = {
     stopTime: string;
     currentTime: string;
   };
+  camera?: {
+    trackedEntityId: string | null;
+    orbitActive: boolean;
+    orbitTargetId: string | null;
+    orbitHeadingDegrees: number | null;
+    headingDegrees: number | null;
+    positionWC: [number, number, number] | null;
+  };
   entities: Array<{
     id: string;
     hasPosition: boolean;
     hasPositionAtCurrentTime: boolean;
     hasPoint: boolean;
     hasPath: boolean;
+    hasCanonicalPosition?: boolean;
+    canonicalPositionSampleCount?: number;
     positionAtCurrentTime?: [number, number, number];
+    pointPixelSize?: number;
+    pointColorRgba?: [number, number, number, number];
+    pathWidth?: number;
   }>;
 };
 
@@ -79,6 +92,34 @@ const satellitePacket = {
   properties: { orbitHint: { string: "900 km SSO / J2" } },
 };
 
+const issPacket = {
+  id: "iss",
+  name: "国际空间站",
+  availability: "2026-01-01T00:00:00Z/2026-01-02T00:00:00Z",
+  position: {
+    epoch: "2026-01-01T00:00:00Z",
+    cartesianVelocity: [
+      0, 7271000, 0, 0, 0, 1000, 7400,
+      43200, -3600000, 6200000, 800000, -6500, -3600, 700,
+      86400, -3700000, -6100000, -900000, 6400, -3700, -800,
+    ],
+  },
+  point: {
+    pixelSize: 10,
+    color: { rgba: [255, 220, 0, 255] },
+  },
+  path: {
+    show: true,
+    width: 2,
+    leadTime: 0,
+    trailTime: 86400,
+    material: {
+      solidColor: { color: { rgba: [0, 200, 255, 220] } },
+    },
+  },
+  properties: { orbitHint: { string: "ISS / SGP4" } },
+};
+
 function response(
   message: string,
   sceneOps: ChatResponse["sceneOps"] = [],
@@ -106,6 +147,20 @@ async function readSceneDiagnostics(page: Page): Promise<SceneDiagnostics> {
   const serialized = await output.getAttribute("data-scene-diagnostics");
   expect(serialized).not.toBeNull();
   return JSON.parse(serialized!) as SceneDiagnostics;
+}
+
+/** 读取生产只读 live diagnostics（不经过聊天回合缓存）。 */
+async function readLiveSceneDiagnostics(
+  page: Page,
+): Promise<SceneDiagnostics> {
+  const diagnostics = await page.evaluate(() => {
+    const reader = window.__CESIUM_AI_READ_DIAGNOSTICS__;
+    if (typeof reader !== "function") {
+      throw new Error("只读 diagnostics 读取器未挂载。");
+    }
+    return reader();
+  });
+  return diagnostics as SceneDiagnostics;
 }
 
 async function sendCommand(
@@ -349,5 +404,257 @@ test("satellite add accepts a one-day cartesianVelocity trajectory", async ({
   expect(Date.parse(advancedDiagnostics.clock!.currentTime)).toBeGreaterThan(
     Date.parse(firstDiagnostics.clock!.currentTime),
   );
+  expect(browserErrors).toEqual([]);
+});
+
+test("camera focus/track/adjust/orbit and style keep ISS position", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const { browserErrors } = await openApp(page, (request) => {
+    if (request.message === "建立验收地面站与国际空间站") {
+      return response("已建立地面站与国际空间站。", [
+        { op: "upsert", packets: [facilityPacket, issPacket] },
+      ]);
+    }
+    if (request.message === "定位到地面站") {
+      return response("已定位到地面站。", [
+        {
+          op: "camera",
+          action: "focus",
+          targetId: facilityPacket.id,
+          distanceMeters: 2_000_000,
+          headingDegrees: 20,
+          pitchDegrees: -35,
+        },
+      ]);
+    }
+    if (request.message === "跟随国际空间站") {
+      return response("已跟随国际空间站。", [
+        { op: "camera", action: "track", targetId: issPacket.id },
+      ]);
+    }
+    if (request.message === "再拉近一点并向左转") {
+      return response("已相对微调相机。", [
+        { op: "camera", action: "zoom", amount: 400_000 },
+        {
+          op: "camera",
+          action: "rotate",
+          // 负 headingDegrees = 左转（正右负左）。
+          headingDegrees: -30,
+        },
+      ]);
+    }
+    if (request.message === "绕国际空间站转一点") {
+      return response("已单次环绕国际空间站。", [
+        {
+          op: "camera",
+          action: "orbitStep",
+          targetId: issPacket.id,
+          amount: 45,
+          pitchDegrees: -40,
+          distanceMeters: 3_000_000,
+        },
+      ]);
+    }
+    if (request.message === "停止跟随并持续环绕") {
+      return response("已停止跟随并开始持续环绕。", [
+        { op: "camera", action: "untrack" },
+        {
+          op: "camera",
+          action: "orbitStart",
+          targetId: issPacket.id,
+          angularSpeedDegreesPerSecond: 12,
+          pitchDegrees: -35,
+          distanceMeters: 3_000_000,
+        },
+      ]);
+    }
+    if (request.message === "停止环绕") {
+      return response("已停止环绕。", [
+        { op: "camera", action: "orbitStop" },
+      ]);
+    }
+    if (request.message === "把国际空间站改成红色，轨迹宽度 5") {
+      return response("已更新国际空间站样式。", [
+        {
+          op: "style",
+          id: issPacket.id,
+          patch: {
+            point: { color: { rgba: [255, 0, 0, 255] }, pixelSize: 12 },
+            path: { width: 5 },
+          },
+        },
+      ]);
+    }
+    return response("场景已就绪。");
+  });
+
+  await sendCommand(
+    page,
+    "建立验收地面站与国际空间站",
+    "已建立地面站与国际空间站。",
+  );
+  const seeded = await readSceneDiagnostics(page);
+  expect(seeded.entities).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        id: facilityPacket.id,
+        hasPositionAtCurrentTime: true,
+      }),
+      expect.objectContaining({
+        id: issPacket.id,
+        hasPosition: true,
+        hasCanonicalPosition: true,
+        hasPath: true,
+        pathWidth: 2,
+      }),
+    ]),
+  );
+  const issBeforeStyle = seeded.entities.find(
+    (entity) => entity.id === issPacket.id,
+  );
+  expect(issBeforeStyle?.positionAtCurrentTime).toHaveLength(3);
+  expect(issBeforeStyle?.canonicalPositionSampleCount).toBe(
+    issPacket.position.cartesianVelocity.length,
+  );
+
+  const beforeFocus = await readSceneDiagnostics(page);
+  await sendCommand(page, "定位到地面站", "已定位到地面站。");
+  const afterFocus = await readSceneDiagnostics(page);
+  expect(afterFocus.camera?.positionWC).not.toBeNull();
+  expect(afterFocus.camera?.positionWC).not.toEqual(
+    beforeFocus.camera?.positionWC,
+  );
+
+  await sendCommand(page, "跟随国际空间站", "已跟随国际空间站。");
+  const afterTrack = await readSceneDiagnostics(page);
+  expect(afterTrack.camera?.trackedEntityId).toBe(issPacket.id);
+  expect(afterTrack.camera?.orbitActive).toBe(false);
+
+  const beforeAdjust = await readLiveSceneDiagnostics(page);
+  const headingBeforeLeft = beforeAdjust.camera?.headingDegrees;
+  expect(typeof headingBeforeLeft).toBe("number");
+  await sendCommand(page, "再拉近一点并向左转", "已相对微调相机。");
+  const afterAdjust = await readLiveSceneDiagnostics(page);
+  expect(afterAdjust.camera?.trackedEntityId).toBe(issPacket.id);
+  expect(afterAdjust.camera?.positionWC).not.toEqual(
+    beforeAdjust.camera?.positionWC,
+  );
+  const headingAfterLeft = afterAdjust.camera?.headingDegrees;
+  expect(typeof headingAfterLeft).toBe("number");
+  // 左转：heading 相对减小（归一化到 (-180, 180]）。
+  const headingDelta =
+    ((((headingAfterLeft! - headingBeforeLeft!) % 360) + 540) % 360) - 180;
+  expect(headingDelta).toBeLessThan(-5);
+
+  const beforeOrbitStep = afterAdjust.camera?.positionWC;
+  await sendCommand(page, "绕国际空间站转一点", "已单次环绕国际空间站。");
+  const afterOrbitStep = await readSceneDiagnostics(page);
+  expect(afterOrbitStep.camera?.positionWC).not.toEqual(beforeOrbitStep);
+
+  await sendCommand(
+    page,
+    "停止跟随并持续环绕",
+    "已停止跟随并开始持续环绕。",
+  );
+  const afterOrbitStart = await readSceneDiagnostics(page);
+  expect(afterOrbitStart.camera?.trackedEntityId).toBeNull();
+  expect(afterOrbitStart.camera?.orbitActive).toBe(true);
+  expect(afterOrbitStart.camera?.orbitTargetId).toBe(issPacket.id);
+
+  // 持续环绕依赖时钟推进；用只读 heading 诊断观测环绕推进。
+  const headingAtStart =
+    (await readLiveSceneDiagnostics(page)).camera?.orbitHeadingDegrees ?? 0;
+  const playForward = page.locator(
+    'g.cesium-animation-rectButton:has(title:text-is("Play Forward"))',
+  );
+  await expect(playForward).toBeVisible();
+  await playForward.click();
+  await expect
+    .poll(
+      async () => {
+        const live = await readLiveSceneDiagnostics(page);
+        const heading = live.camera?.orbitHeadingDegrees;
+        return {
+          orbitActive: live.camera?.orbitActive === true,
+          headingAdvanced:
+            typeof heading === "number" &&
+            Math.abs(heading - headingAtStart) > 1,
+          positionMoved:
+            JSON.stringify(live.camera?.positionWC) !==
+            JSON.stringify(afterOrbitStart.camera?.positionWC),
+        };
+      },
+      { timeout: 15_000 },
+    )
+    .toEqual({
+      orbitActive: true,
+      headingAdvanced: true,
+      positionMoved: true,
+    });
+
+  const pause = page.locator(
+    'g.cesium-animation-rectButton:has(title:text-is("Pause"))',
+  );
+  await pause.click();
+
+  await sendCommand(page, "停止环绕", "已停止环绕。");
+  const afterOrbitStop = await readSceneDiagnostics(page);
+  expect(afterOrbitStop.camera?.orbitActive).toBe(false);
+  expect(afterOrbitStop.camera?.orbitTargetId).toBeNull();
+
+  // 停止后恢复时钟并等待多个 tick：生产相机 position/heading 不得再因 orbit 更新。
+  const baseline = await readLiveSceneDiagnostics(page);
+  const baselinePosition = baseline.camera?.positionWC;
+  const baselineHeading = baseline.camera?.headingDegrees;
+  expect(baselinePosition).not.toBeNull();
+  expect(typeof baselineHeading).toBe("number");
+  await playForward.click();
+  await page.waitForTimeout(800);
+  const afterTicks = await readLiveSceneDiagnostics(page);
+  expect(afterTicks.camera?.orbitActive).toBe(false);
+  expect(afterTicks.camera?.positionWC).not.toBeNull();
+  expect(typeof afterTicks.camera?.headingDegrees).toBe("number");
+  const positionDrift = Math.hypot(
+    (afterTicks.camera!.positionWC![0] - baselinePosition![0]),
+    (afterTicks.camera!.positionWC![1] - baselinePosition![1]),
+    (afterTicks.camera!.positionWC![2] - baselinePosition![2]),
+  );
+  const headingDrift = Math.abs(
+    ((((afterTicks.camera!.headingDegrees! - baselineHeading!) % 360) + 540) %
+      360) -
+      180,
+  );
+  // 若 orbit tick listener 未解除，卫星运动会使 lookAt 持续更新，漂移会显著增大。
+  expect(positionDrift).toBeLessThan(1);
+  expect(headingDrift).toBeLessThan(0.05);
+  await pause.click();
+
+  await sendCommand(
+    page,
+    "把国际空间站改成红色，轨迹宽度 5",
+    "已更新国际空间站样式。",
+  );
+  const afterStyle = await readSceneDiagnostics(page);
+  const styledIss = afterStyle.entities.find(
+    (entity) => entity.id === issPacket.id,
+  );
+  expect(styledIss).toEqual(
+    expect.objectContaining({
+      id: issPacket.id,
+      hasPosition: true,
+      hasPositionAtCurrentTime: true,
+      hasCanonicalPosition: true,
+      hasPath: true,
+      pathWidth: 5,
+      pointColorRgba: [255, 0, 0, 255],
+      // 样式合并后完整 Position 采样仍保留（不要求时钟时刻坐标相同）。
+      canonicalPositionSampleCount:
+        issPacket.position.cartesianVelocity.length,
+    }),
+  );
+  expect(styledIss?.positionAtCurrentTime).toHaveLength(3);
+
   expect(browserErrors).toEqual([]);
 });

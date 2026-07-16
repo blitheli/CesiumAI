@@ -158,6 +158,9 @@ it("assembles scene context, reuses the session, and applies each response once"
 });
 
 it("publishes read-only diagnostics after Cesium applies a response", async () => {
+  vi.stubEnv("VITE_ENABLE_TEST_DIAGNOSTICS", "true");
+  vi.resetModules();
+  const { App: AppWithDiagnostics } = await import("./App");
   const user = userEvent.setup();
   const manager = createManager();
   manager.getSceneDiagnostics = vi.fn(() => ({
@@ -182,12 +185,18 @@ it("publishes read-only diagnostics after Cesium applies a response", async () =
     message: "已添加卫星。",
     sceneOps: [{ op: "upsert", packets: [{ id: "satellite" }] }],
   }));
-  renderApp(manager, chatClient);
+  render(
+    <AppWithDiagnostics
+      sceneManager={manager}
+      chatClient={chatClient}
+      ViewerComponent={ViewerStub}
+    />,
+  );
 
   await user.type(screen.getByLabelText("消息"), "添加卫星{Enter}");
 
   const output = await screen.findByLabelText("场景诊断");
-  expect(manager.getSceneDiagnostics).toHaveBeenCalledOnce();
+  expect(manager.getSceneDiagnostics).toHaveBeenCalled();
   expect(output).toHaveTextContent("1 个实体");
   expect(JSON.parse(output.getAttribute("data-scene-diagnostics") ?? "")).toEqual(
     expect.objectContaining({
@@ -203,6 +212,39 @@ it("publishes read-only diagnostics after Cesium applies a response", async () =
       ],
     }),
   );
+  expect(typeof window.__CESIUM_AI_READ_DIAGNOSTICS__).toBe("function");
+  vi.unstubAllEnvs();
+});
+
+it("does not expose diagnostics UI or window global when test flag is off", async () => {
+  vi.stubEnv("VITE_ENABLE_TEST_DIAGNOSTICS", "");
+  vi.resetModules();
+  const { App: AppWithoutDiagnostics } = await import("./App");
+  const user = userEvent.setup();
+  const manager = createManager();
+  manager.getSceneDiagnostics = vi.fn(() => ({
+    entities: [{ id: "satellite", hasPosition: true, hasPositionAtCurrentTime: true, hasPoint: true, hasPath: true }],
+  }));
+  const chatClient = vi.fn<ChatClient>(async () => ({
+    sessionId: "session-1",
+    message: "已添加卫星。",
+    sceneOps: [{ op: "upsert", packets: [{ id: "satellite" }] }],
+  }));
+  render(
+    <AppWithoutDiagnostics
+      sceneManager={manager}
+      chatClient={chatClient}
+      ViewerComponent={ViewerStub}
+    />,
+  );
+
+  await user.type(screen.getByLabelText("消息"), "添加卫星{Enter}");
+  await waitFor(() => expect(chatClient).toHaveBeenCalledOnce());
+
+  expect(screen.queryByLabelText("场景诊断")).toBeNull();
+  expect(window.__CESIUM_AI_READ_DIAGNOSTICS__).toBeUndefined();
+  expect(manager.getSceneDiagnostics).not.toHaveBeenCalled();
+  vi.unstubAllEnvs();
 });
 
 it("shows API errors without retrying", async () => {

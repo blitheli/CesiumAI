@@ -176,7 +176,7 @@ public sealed class SceneTools(
         return "Camera untrack queued.";
     }
 
-    [Description("Adjust the camera relatively. action is zoom|pan|rotate. Distances use meters; angles use degrees.")]
+    [Description("Adjust the camera relatively. action is zoom|pan|rotate. Distances use meters; angles use degrees. rotate 的 headingDegrees：正为右转，负为左转。")]
     public string AdjustCamera(
         string action,
         double? amount = null,

@@ -115,7 +115,23 @@ export type CameraViewerAdapter = {
     y: number;
     z: number;
   }): { heading: number; pitch: number; range: number };
+  /** 只读：当前相机世界坐标，供诊断观测，不改变控制器状态。 */
+  getCameraPositionWC(): { x: number; y: number; z: number } | undefined;
+  /** 只读：当前相机 heading（度）。 */
+  getCameraHeadingDegrees(): number | undefined;
   getEntityById(id: string): CameraEntityAdapter | undefined;
+};
+
+/** 只读相机诊断；不得用于绕过真实控制器执行动作。 */
+export type CameraDiagnostics = {
+  trackedEntityId: string | null;
+  orbitActive: boolean;
+  orbitTargetId: string | null;
+  /** 持续环绕时的当前航向（度），便于观测环绕推进。 */
+  orbitHeadingDegrees: number | null;
+  /** 生产相机当前 heading（度，Cesium 约定）；用于相对转向方向断言。 */
+  headingDegrees: number | null;
+  positionWC: [number, number, number] | null;
 };
 
 export interface CameraControllerPort {
@@ -123,6 +139,8 @@ export interface CameraControllerPort {
   onSceneCleared(): void;
   onEntitiesDeleted(ids: string[]): void;
   destroy(): void;
+  /** 只读观测当前跟随/环绕/相机位置。 */
+  getDiagnostics(): CameraDiagnostics;
 }
 
 const DEFAULT_ORBIT_HEADING_DEGREES = 0;
@@ -232,6 +250,28 @@ export class CesiumCameraController implements CameraControllerPort {
     this.stopOrbit();
     this.adapter.setTrackedEntity(undefined);
     this.destroyed = true;
+  }
+
+  getDiagnostics(): CameraDiagnostics {
+    const tracked = this.adapter.getTrackedEntity();
+    const position = this.adapter.getCameraPositionWC();
+    const headingDegrees = this.adapter.getCameraHeadingDegrees();
+    return {
+      trackedEntityId: tracked?.id ?? null,
+      orbitActive: this.orbit !== undefined,
+      orbitTargetId: this.orbit?.targetId ?? null,
+      orbitHeadingDegrees:
+        this.orbit !== undefined
+          ? CesiumMath.toDegrees(this.orbit.headingRadians)
+          : null,
+      headingDegrees:
+        typeof headingDegrees === "number" && Number.isFinite(headingDegrees)
+          ? headingDegrees
+          : null,
+      positionWC: position
+        ? [position.x, position.y, position.z]
+        : null,
+    };
   }
 
   private async focus(operation: CameraSceneOp): Promise<void> {
@@ -614,6 +654,20 @@ export function createCesiumCameraViewerAdapter(
         new Cartesian3(),
       );
       return headingPitchRangeFromLocalOffset(localOffset);
+    },
+    getCameraPositionWC: () => {
+      const position = viewer.camera?.positionWC;
+      if (!position) {
+        return undefined;
+      }
+      return { x: position.x, y: position.y, z: position.z };
+    },
+    getCameraHeadingDegrees: () => {
+      const heading = viewer.camera?.heading;
+      if (typeof heading !== "number" || !Number.isFinite(heading)) {
+        return undefined;
+      }
+      return CesiumMath.toDegrees(heading);
     },
     getEntityById: (id) => getEntityById(id),
   };

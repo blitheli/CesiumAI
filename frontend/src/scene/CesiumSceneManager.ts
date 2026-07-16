@@ -18,6 +18,7 @@ import {
 import {
   createCesiumCameraController,
   type CameraControllerPort,
+  type CameraDiagnostics,
 } from "./CesiumCameraController";
 
 export interface CzmlDataSourcePort {
@@ -53,7 +54,13 @@ export type SceneEntityDiagnostics = {
   hasPositionAtCurrentTime: boolean;
   hasPoint: boolean;
   hasPath: boolean;
+  hasCanonicalPosition?: boolean;
+  /** canonical packet 中 Position 采样点数量（只读，用于样式后保留校验）。 */
+  canonicalPositionSampleCount?: number;
   positionAtCurrentTime?: [number, number, number];
+  pointPixelSize?: number;
+  pointColorRgba?: [number, number, number, number];
+  pathWidth?: number;
 };
 
 export type SceneDiagnostics = {
@@ -62,6 +69,7 @@ export type SceneDiagnostics = {
     stopTime: string;
     currentTime: string;
   };
+  camera?: CameraDiagnostics;
   entities: SceneEntityDiagnostics[];
 };
 
@@ -215,12 +223,32 @@ class CesiumCzmlDataSourcePort implements CzmlDataSourcePort {
     const currentTime = this.viewer.clock.currentTime;
     const entities = this.dataSource.entities.values.map((entity) => {
       const position = entity.position?.getValue(currentTime);
+      const pixelSize = entity.point?.pixelSize?.getValue(currentTime);
+      const color = entity.point?.color?.getValue(currentTime);
+      const pathWidth = entity.path?.width?.getValue(currentTime);
+      const pointColorRgba =
+        color &&
+        typeof color.red === "number" &&
+        typeof color.green === "number" &&
+        typeof color.blue === "number" &&
+        typeof color.alpha === "number"
+          ? ([
+              Math.round(color.red * 255),
+              Math.round(color.green * 255),
+              Math.round(color.blue * 255),
+              Math.round(color.alpha * 255),
+            ] as [number, number, number, number])
+          : undefined;
+
       return {
         id: entity.id,
         hasPosition: entity.position !== undefined,
         hasPositionAtCurrentTime: position !== undefined,
         hasPoint: entity.point !== undefined,
         hasPath: entity.path !== undefined,
+        ...(typeof pixelSize === "number" ? { pointPixelSize: pixelSize } : {}),
+        ...(pointColorRgba ? { pointColorRgba } : {}),
+        ...(typeof pathWidth === "number" ? { pathWidth } : {}),
         ...(position
           ? {
               positionAtCurrentTime: [
@@ -449,9 +477,46 @@ export class CesiumSceneManager {
   }
 
   getSceneDiagnostics(): SceneDiagnostics {
-    return structuredClone(
+    const base = structuredClone(
       this.requireDataSourcePort().getSceneDiagnostics(),
     );
+    const camera = this.cameraController?.getDiagnostics() ?? {
+      trackedEntityId: null,
+      orbitActive: false,
+      orbitTargetId: null,
+      orbitHeadingDegrees: null,
+      headingDegrees: null,
+      positionWC: null,
+    };
+
+    return {
+      ...base,
+      camera: structuredClone(camera),
+      entities: base.entities.map((entity) => {
+        const packet = this.sceneDocument.find(
+          (candidate) => candidate.id === entity.id,
+        );
+        const position =
+          packet != null &&
+          "position" in packet &&
+          packet.position != null &&
+          typeof packet.position === "object"
+            ? (packet.position as Record<string, unknown>)
+            : undefined;
+        const samples = Array.isArray(position?.cartesianVelocity)
+          ? position.cartesianVelocity
+          : Array.isArray(position?.cartesian)
+            ? position.cartesian
+            : undefined;
+        return {
+          ...entity,
+          hasCanonicalPosition: position !== undefined,
+          ...(samples
+            ? { canonicalPositionSampleCount: samples.length }
+            : {}),
+        };
+      }),
+    };
   }
 
   private requireDataSourcePort(): CzmlDataSourcePort {
