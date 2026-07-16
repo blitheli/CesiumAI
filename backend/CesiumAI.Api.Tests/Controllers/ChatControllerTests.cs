@@ -123,6 +123,14 @@ public sealed class ChatControllerTests(ApiFactory factory) : IClassFixture<ApiF
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
+    [Fact]
+    public async Task HealthCheck_ReturnsOkAfterStartupValidationSucceeds()
+    {
+        using HttpResponseMessage response = await _client.GetAsync("/healthz");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
     private static object CreateRequest(string message) =>
         new
         {

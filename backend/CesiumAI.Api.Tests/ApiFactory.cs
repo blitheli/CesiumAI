@@ -16,25 +16,51 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
 {
     private static readonly TimeSpan IntegrationTimeout = TimeSpan.FromMilliseconds(25);
     private readonly string _environment;
+    private readonly string _skillsDirectory;
+    private readonly bool _ownsSkillsDirectory;
 
     public ApiFactory()
-        : this(Environments.Development)
+        : this(
+            Environments.Development,
+            Directory.CreateTempSubdirectory("cesiumai-test-skills-").FullName,
+            ownsSkillsDirectory: true)
     {
     }
 
     internal ApiFactory(string environment)
+        : this(
+            environment,
+            Directory.CreateTempSubdirectory("cesiumai-test-skills-").FullName,
+            ownsSkillsDirectory: true)
+    {
+    }
+
+    internal ApiFactory(string environment, string skillsDirectory)
+        : this(environment, skillsDirectory, ownsSkillsDirectory: false)
+    {
+    }
+
+    private ApiFactory(
+        string environment,
+        string skillsDirectory,
+        bool ownsSkillsDirectory)
     {
         _environment = environment;
+        _skillsDirectory = skillsDirectory;
+        _ownsSkillsDirectory = ownsSkillsDirectory;
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment(_environment);
-        builder.ConfigureAppConfiguration(configuration =>
+        builder.ConfigureAppConfiguration((context, configuration) =>
         {
             configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["Agent:ApiKey"] = "integration-test-key",
+                ["Skills:Path"] = Path.GetRelativePath(
+                    context.HostingEnvironment.ContentRootPath,
+                    _skillsDirectory),
                 [$"{ChatEndpointOptions.SectionName}:Timeout"] =
                     IntegrationTimeout.ToString("c")
             });
@@ -45,6 +71,16 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddSingleton<IChatService, FakeChatService>();
             services.AddSingleton<IStartupFilter, ClientCancellationStartupFilter>();
         });
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+
+        if (disposing && _ownsSkillsDirectory && Directory.Exists(_skillsDirectory))
+        {
+            Directory.Delete(_skillsDirectory, recursive: true);
+        }
     }
 
     private sealed class FakeChatService : IChatService

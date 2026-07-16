@@ -36,13 +36,8 @@ public sealed class AgentFactory : IAgentRuntimeFactory, IDisposable
         _rawTools = rawTools ?? throw new ArgumentNullException(nameof(rawTools));
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
 
-        string skillsPath = ResolveSkillsPath(skillsOptions.Value.Path, hostEnvironment.ContentRootPath);
-        if (!Directory.Exists(skillsPath))
-        {
-            throw new DirectoryNotFoundException(
-                $"Skills directory '{skillsPath}' does not exist. Configure Skills:Path as a path relative to the application content root.");
-        }
-
+        string skillsPath = skillsOptions.Value.ResolveExistingDirectory(
+            hostEnvironment.ContentRootPath);
         _skillsProvider = new AgentSkillsProvider(
             skillsPath,
             options: CreateSkillsProviderOptions(),
@@ -101,21 +96,4 @@ public sealed class AgentFactory : IAgentRuntimeFactory, IDisposable
             DisableReadSkillResourceApproval = true,
             DisableRunSkillScriptApproval = false
         };
-
-    private static string ResolveSkillsPath(string configuredPath, string contentRootPath)
-    {
-        if (string.IsNullOrWhiteSpace(configuredPath))
-        {
-            throw new ArgumentException("Skills:Path cannot be blank.", nameof(configuredPath));
-        }
-
-        if (Path.IsPathRooted(configuredPath))
-        {
-            throw new ArgumentException(
-                "Skills:Path must be relative to the application content root.",
-                nameof(configuredPath));
-        }
-
-        return Path.GetFullPath(Path.Combine(contentRootPath, configuredPath));
-    }
 }

@@ -10,6 +10,7 @@ const string DevelopmentCorsPolicy = "DevelopmentFrontend";
 const string AstroxRawClient = "AstroxRaw";
 
 builder.Services.AddControllers();
+builder.Services.AddHealthChecks();
 builder.Services
     .AddOptions<ChatEndpointOptions>()
     .Bind(builder.Configuration.GetSection(ChatEndpointOptions.SectionName))
@@ -49,7 +50,9 @@ builder.Services
     .ValidateOnStart();
 builder.Services
     .AddOptions<SkillsOptions>()
-    .Bind(builder.Configuration.GetSection(SkillsOptions.SectionName));
+    .Bind(builder.Configuration.GetSection(SkillsOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<SkillsOptions>, SkillsOptionsValidator>();
 
 builder.Services
     .AddHttpClient<IAstroxClient, AstroxClient>((services, client) =>
@@ -100,6 +103,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.MapControllers();
+app.MapHealthChecks("/healthz");
 
 app.Run();
 
