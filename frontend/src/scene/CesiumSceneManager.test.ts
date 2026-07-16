@@ -43,12 +43,25 @@ const cesiumFakes = vi.hoisted(() => {
     dataSources,
     FakeCzmlDataSource,
     clone: vi.fn((value: { value: string }) => ({ ...value })),
+    fromIso8601: vi.fn((value: string) => ({ value })),
   };
 });
 
 vi.mock("cesium", () => ({
+  ClockRange: { LOOP_STOP: 2 },
   CzmlDataSource: cesiumFakes.FakeCzmlDataSource,
-  JulianDate: { clone: cesiumFakes.clone },
+  JulianDate: {
+    clone: cesiumFakes.clone,
+    fromIso8601: cesiumFakes.fromIso8601,
+    greaterThan: vi.fn(
+      (left: { value: string }, right: { value: string }) =>
+        left.value > right.value,
+    ),
+    lessThan: vi.fn(
+      (left: { value: string }, right: { value: string }) =>
+        left.value < right.value,
+    ),
+  },
 }));
 
 function createEmpty(): CzmlPacket[] {
@@ -71,6 +84,7 @@ function createPort(overrides: Partial<CzmlDataSourcePort> = {}): CzmlDataSource
     process: vi.fn(async () => undefined),
     removeById: vi.fn(() => true),
     syncViewerClock: vi.fn(),
+    getSceneDiagnostics: vi.fn(() => ({ entities: [] })),
     ...overrides,
   };
 }
@@ -78,6 +92,7 @@ function createPort(overrides: Partial<CzmlDataSourcePort> = {}): CzmlDataSource
 beforeEach(() => {
   cesiumFakes.dataSources.length = 0;
   cesiumFakes.clone.mockClear();
+  cesiumFakes.fromIso8601.mockClear();
 });
 
 it("loads the empty document exactly once during initialization", async () => {
@@ -142,6 +157,7 @@ it("routes clear, upsert, and delete through the port in operation order", async
   ]);
 
   expect(calls).toEqual([
+    "remove:satellite",
     "process",
     "sync-clock",
     "remove:satellite",
@@ -193,6 +209,123 @@ it("does not process an upsert containing only document packets", async () => {
   expect(manager.pickRelevantPackets(["document"])).toEqual(createEmpty());
 });
 
+it("removes an existing satellite before replacing it with a facility", async () => {
+  const port = createPort();
+  const manager = new CesiumSceneManager(createEmpty, port);
+  await manager.initialize();
+  await manager.applySceneOps([
+    {
+      op: "upsert",
+      packets: [{ id: "shared", position: {}, path: { show: true } }],
+    },
+  ]);
+  vi.mocked(port.removeById).mockClear();
+
+  await manager.applySceneOps([
+    {
+      op: "upsert",
+      packets: [{ id: "shared", position: {}, point: { pixelSize: 10 } }],
+    },
+  ]);
+
+  expect(port.removeById).toHaveBeenCalledOnce();
+  expect(port.removeById).toHaveBeenCalledWith("shared");
+  expect(vi.mocked(port.removeById).mock.invocationCallOrder[0]).toBeLessThan(
+    vi.mocked(port.process).mock.invocationCallOrder[1]!,
+  );
+  expect(manager.pickRelevantPackets(["shared"])).toEqual([
+    { id: "shared", position: {}, point: { pixelSize: 10 } },
+  ]);
+});
+
+it("removes the old entity so omitted properties are deleted in Cesium", async () => {
+  const calls: string[] = [];
+  const port = createPort({
+    removeById: vi.fn((id) => {
+      calls.push(`remove:${id}`);
+      return true;
+    }),
+    process: vi.fn(async (packets) => {
+      calls.push(`process:${String(packets[0]?.id)}`);
+    }),
+  });
+  const manager = new CesiumSceneManager(createEmpty, port);
+  await manager.initialize();
+  await manager.applySceneOps([
+    {
+      op: "upsert",
+      packets: [{ id: "facility", point: {}, label: { text: "old" } }],
+    },
+  ]);
+  calls.length = 0;
+
+  await manager.applySceneOps([
+    { op: "upsert", packets: [{ id: "facility", point: {} }] },
+  ]);
+
+  expect(calls).toEqual(["remove:facility", "process:facility"]);
+  expect(manager.pickRelevantPackets(["facility"])).toEqual([
+    { id: "facility", point: {} },
+  ]);
+});
+
+it("reloads the prior document when replacement processing fails", async () => {
+  const failure = new Error("replacement rejected");
+  const port = createPort({
+    process: vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(failure),
+  });
+  const manager = new CesiumSceneManager(createEmpty, port);
+  await manager.initialize();
+  const priorPacket = {
+    id: "shared",
+    position: {},
+    path: { show: true },
+  };
+  await manager.applySceneOps([
+    { op: "upsert", packets: [priorPacket] },
+  ]);
+
+  await expect(
+    manager.applySceneOps([
+      {
+        op: "upsert",
+        packets: [{ id: "shared", position: {}, point: {} }],
+      },
+    ]),
+  ).rejects.toBe(failure);
+
+  expect(port.load).toHaveBeenCalledTimes(2);
+  expect(port.load).toHaveBeenLastCalledWith([...createEmpty(), priorPacket]);
+  expect(manager.pickRelevantPackets(["shared"])).toEqual([priorPacket]);
+});
+
+it("derives the authoritative document and viewer clock from satellite availability", async () => {
+  const port = createPort();
+  const manager = new CesiumSceneManager(createEmpty, port);
+  await manager.initialize();
+  const availability =
+    "2026-01-01T00:00:00Z/2026-01-02T00:00:00Z";
+
+  await manager.applySceneOps([
+    {
+      op: "upsert",
+      packets: [{ id: "satellite", availability, position: {}, path: {} }],
+    },
+  ]);
+
+  expect(manager.pickRelevantPackets(["document"])[0]?.clock).toEqual({
+    interval: availability,
+    currentTime: "2026-01-01T00:00:00Z",
+  });
+  expect(port.syncViewerClock).toHaveBeenCalledWith({
+    interval: availability,
+    currentTime: "2026-01-01T00:00:00Z",
+  });
+});
+
 it("commits an upsert only after Cesium processing and clock sync succeed", async () => {
   let resolveProcess: (() => void) | undefined;
   const processPending = new Promise<void>((resolve) => {
@@ -237,8 +370,10 @@ it("stops at a rejected operation and leaves its document change uncommitted", a
     ]),
   ).rejects.toBe(failure);
 
-  expect(port.syncViewerClock).not.toHaveBeenCalled();
-  expect(port.load).toHaveBeenCalledOnce();
+  expect(port.syncViewerClock).toHaveBeenCalledOnce();
+  expect(port.syncViewerClock).toHaveBeenCalledWith(createEmpty()[0]?.clock);
+  expect(port.load).toHaveBeenCalledTimes(2);
+  expect(port.load).toHaveBeenLastCalledWith(createEmpty());
   expect(manager.pickRelevantPackets(["invalid"])).toEqual([]);
 });
 
@@ -264,7 +399,9 @@ it("commits successful operations before a later operation rejects", async () =>
   expect(manager.pickRelevantPackets(["committed", "rejected"])).toEqual([
     { id: "committed", point: {} },
   ]);
-  expect(port.removeById).not.toHaveBeenCalled();
+  expect(port.removeById).toHaveBeenCalledTimes(2);
+  expect(port.removeById).toHaveBeenNthCalledWith(1, "committed");
+  expect(port.removeById).toHaveBeenNthCalledWith(2, "rejected");
 });
 
 it("serializes concurrent apply calls so later work uses committed state", async () => {
@@ -372,7 +509,7 @@ it("returns detached summary, packet, and selection values", async () => {
   expect(manager.buildSummary().entities[0]?.name).toBe("Sanya");
 });
 
-it("production port loads before attaching and syncs cloned data-source clock values", async () => {
+it("production port loads before attaching and syncs the explicit availability clock", async () => {
   const viewer = {
     dataSources: {
       add: vi.fn(),
@@ -394,14 +531,19 @@ it("production port loads before attaching and syncs cloned data-source clock va
   const dataSource = cesiumFakes.dataSources[0]!;
 
   dataSource.clock = {
-    startTime: { value: "start" },
-    stopTime: { value: "stop" },
-    currentTime: { value: "current" },
-    clockRange: 2,
-    multiplier: 60,
+    startTime: { value: "stale-source-start" },
+    stopTime: { value: "stale-source-stop" },
+    currentTime: { value: "stale-source-current" },
+    clockRange: 1,
+    multiplier: 999,
   };
+  const availability =
+    "2026-01-01T00:00:00Z/2026-01-02T00:00:00Z";
   await manager.applySceneOps([
-    { op: "upsert", packets: [{ id: "satellite", path: {} }] },
+    {
+      op: "upsert",
+      packets: [{ id: "satellite", availability, path: {} }],
+    },
   ]);
 
   expect(dataSource.load).toHaveBeenCalledOnce();
@@ -409,15 +551,16 @@ it("production port loads before attaching and syncs cloned data-source clock va
     viewer.dataSources.add.mock.invocationCallOrder[0]!,
   );
   expect(viewer.clock).toEqual({
-    startTime: { value: "start" },
-    stopTime: { value: "stop" },
-    currentTime: { value: "current" },
+    startTime: { value: "2026-01-01T00:00:00Z" },
+    stopTime: { value: "2026-01-02T00:00:00Z" },
+    currentTime: { value: "2026-01-01T00:00:00Z" },
     clockRange: 2,
-    multiplier: 60,
+    multiplier: 1,
+    shouldAnimate: true,
   });
-  expect(viewer.clock.startTime).not.toBe(dataSource.clock.startTime);
-  expect(viewer.clock.stopTime).not.toBe(dataSource.clock.stopTime);
-  expect(viewer.clock.currentTime).not.toBe(dataSource.clock.currentTime);
+  expect(viewer.clock.startTime).not.toEqual(dataSource.clock.startTime);
+  expect(viewer.clock.stopTime).not.toEqual(dataSource.clock.stopTime);
+  expect(viewer.clock.currentTime).not.toEqual(dataSource.clock.currentTime);
   expect(viewer.timeline.zoomTo).toHaveBeenCalledWith(
     viewer.clock.startTime,
     viewer.clock.stopTime,
@@ -434,7 +577,7 @@ it("waits for the data source attachment before completing initialization", asyn
       add: vi.fn(() => attaching),
     },
     clock: {},
-    timeline: {},
+    timeline: { zoomTo: vi.fn() },
   };
   const manager = new CesiumSceneManager(createEmpty);
 

@@ -48,6 +48,7 @@ function createManager(
       ids.map((id) => packets[id]).filter((packet) => packet !== undefined),
     ),
     applySceneOps: vi.fn(async () => undefined),
+    getSceneDiagnostics: vi.fn(() => ({ entities: [] })),
     ...overrides,
   };
 }
@@ -152,6 +153,54 @@ it("assembles scene context, reuses the session, and applies each response once"
   expect(manager.applySceneOps).toHaveBeenNthCalledWith(
     2,
     responses[1]!.sceneOps,
+  );
+});
+
+it("publishes read-only diagnostics after Cesium applies a response", async () => {
+  const user = userEvent.setup();
+  const manager = createManager();
+  manager.getSceneDiagnostics = vi.fn(() => ({
+    clock: {
+      startTime: "2026-01-01T00:00:00.000Z",
+      stopTime: "2026-01-02T00:00:00.000Z",
+      currentTime: "2026-01-01T00:00:01.000Z",
+    },
+    entities: [
+      {
+        id: "satellite",
+        hasPosition: true,
+        hasPositionAtCurrentTime: true,
+        hasPoint: true,
+        hasPath: true,
+        positionAtCurrentTime: [1, 2, 3] as [number, number, number],
+      },
+    ],
+  }));
+  const chatClient = vi.fn<ChatClient>(async () => ({
+    sessionId: "session-1",
+    message: "已添加卫星。",
+    sceneOps: [{ op: "upsert", packets: [{ id: "satellite" }] }],
+  }));
+  renderApp(manager, chatClient);
+
+  await user.type(screen.getByLabelText("消息"), "添加卫星{Enter}");
+
+  const output = await screen.findByLabelText("场景诊断");
+  expect(manager.getSceneDiagnostics).toHaveBeenCalledOnce();
+  expect(output).toHaveTextContent("1 个实体");
+  expect(JSON.parse(output.getAttribute("data-scene-diagnostics") ?? "")).toEqual(
+    expect.objectContaining({
+      clock: expect.objectContaining({
+        currentTime: "2026-01-01T00:00:01.000Z",
+      }),
+      entities: [
+        expect.objectContaining({
+          id: "satellite",
+          hasPositionAtCurrentTime: true,
+          hasPath: true,
+        }),
+      ],
+    }),
   );
 });
 

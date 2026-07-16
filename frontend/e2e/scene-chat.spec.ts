@@ -20,6 +20,22 @@ type ChatResponse = {
   sceneOps: Array<Record<string, unknown>>;
 };
 
+type SceneDiagnostics = {
+  clock?: {
+    startTime: string;
+    stopTime: string;
+    currentTime: string;
+  };
+  entities: Array<{
+    id: string;
+    hasPosition: boolean;
+    hasPositionAtCurrentTime: boolean;
+    hasPoint: boolean;
+    hasPath: boolean;
+    positionAtCurrentTime?: [number, number, number];
+  }>;
+};
+
 const facilityPacket = {
   id: "acceptance-facility",
   name: "Acceptance Ground Station",
@@ -40,14 +56,12 @@ const satellitePacket = {
   name: "Acceptance 900 km SSO",
   availability: "2026-01-01T00:00:00Z/2026-01-02T00:00:00Z",
   position: {
-    cartesianVelocity: {
-      epoch: "2026-01-01T00:00:00Z",
-      cartesian: [
-        0, 7271000, 0, 0, 0, 1000, 7400,
-        43200, -3600000, 6200000, 800000, -6500, -3600, 700,
-        86400, -3700000, -6100000, -900000, 6400, -3700, -800,
-      ],
-    },
+    epoch: "2026-01-01T00:00:00Z",
+    cartesianVelocity: [
+      0, 7271000, 0, 0, 0, 1000, 7400,
+      43200, -3600000, 6200000, 800000, -6500, -3600, 700,
+      86400, -3700000, -6100000, -900000, 6400, -3700, -800,
+    ],
   },
   point: {
     pixelSize: 8,
@@ -84,6 +98,14 @@ async function expectSameCanvas(page: Page) {
       '.cesium-widget canvas[data-e2e-persistent-canvas="true"]',
     ),
   ).toHaveCount(1);
+}
+
+async function readSceneDiagnostics(page: Page): Promise<SceneDiagnostics> {
+  const output = page.getByLabel("场景诊断");
+  await expect(output).toBeVisible();
+  const serialized = await output.getAttribute("data-scene-diagnostics");
+  expect(serialized).not.toBeNull();
+  return JSON.parse(serialized!) as SceneDiagnostics;
 }
 
 async function sendCommand(
@@ -161,6 +183,7 @@ test("clear resets the scene while the Cesium canvas stays mounted", async ({
     expect.objectContaining({ id: facilityPacket.id }),
   ]);
   expect(requests[2]?.sceneSummary?.entities).toEqual([]);
+  expect((await readSceneDiagnostics(page)).entities).toEqual([]);
   expect(browserErrors).toEqual([]);
 });
 
@@ -196,6 +219,14 @@ test("facility add sends scene context and makes the packet relevant by name", a
     }),
   );
   expect(requests[1]?.relevantPackets).toContainEqual(facilityPacket);
+  expect((await readSceneDiagnostics(page)).entities).toContainEqual(
+    expect.objectContaining({
+      id: facilityPacket.id,
+      hasPosition: true,
+      hasPositionAtCurrentTime: true,
+      hasPoint: true,
+    }),
+  );
   expect(browserErrors).toEqual([]);
 });
 
@@ -217,6 +248,8 @@ test("facility update replaces the named entity packet at a static position", as
   });
 
   await sendCommand(page, "添加验收地面站", "已添加验收地面站。");
+  const positionBeforeUpdate = (await readSceneDiagnostics(page)).entities[0]
+    ?.positionAtCurrentTime;
   await sendCommand(
     page,
     "把 Acceptance Ground Station 高度改为 50 米",
@@ -233,6 +266,17 @@ test("facility update replaces the named entity packet at a static position", as
     expect.objectContaining({ id: facilityPacket.id, alt: 50 }),
   );
   expect(requests[2]?.relevantPackets).toContainEqual(updatedFacilityPacket);
+  const updatedDiagnostics = await readSceneDiagnostics(page);
+  expect(updatedDiagnostics.entities[0]).toEqual(
+    expect.objectContaining({
+      id: facilityPacket.id,
+      hasPositionAtCurrentTime: true,
+      hasPoint: true,
+    }),
+  );
+  expect(updatedDiagnostics.entities[0]?.positionAtCurrentTime).not.toEqual(
+    positionBeforeUpdate,
+  );
   expect(browserErrors).toEqual([]);
 });
 
@@ -252,6 +296,27 @@ test("satellite add accepts a one-day cartesianVelocity trajectory", async ({
     "添加一个 900km SSO 卫星，使用 J2 递推一天",
     "已添加 900km SSO 卫星和一天 J2 星历。",
   );
+  const firstDiagnostics = await readSceneDiagnostics(page);
+  const firstPosition =
+    firstDiagnostics.entities[0]?.positionAtCurrentTime;
+  expect(firstDiagnostics.entities).toContainEqual(
+    expect.objectContaining({
+      id: satellitePacket.id,
+      hasPosition: true,
+      hasPositionAtCurrentTime: true,
+      hasPath: true,
+    }),
+  );
+  expect(firstPosition).toHaveLength(3);
+  expect(firstDiagnostics.clock).toBeDefined();
+  expect(Date.parse(firstDiagnostics.clock!.currentTime)).toBeGreaterThanOrEqual(
+    Date.parse(satellitePacket.availability.split("/")[0]!),
+  );
+  expect(Date.parse(firstDiagnostics.clock!.currentTime)).toBeLessThanOrEqual(
+    Date.parse(satellitePacket.availability.split("/")[1]!),
+  );
+
+  await page.waitForTimeout(250);
   await sendCommand(
     page,
     "查询 Acceptance 900 km SSO",
@@ -259,7 +324,7 @@ test("satellite add accepts a one-day cartesianVelocity trajectory", async ({
   );
 
   expect(satellitePacket.availability).toContain("/");
-  expect(satellitePacket.position.cartesianVelocity.cartesian).toHaveLength(21);
+  expect(satellitePacket.position.cartesianVelocity).toHaveLength(21);
   expect(requests[1]?.sceneSummary?.entities).toContainEqual(
     expect.objectContaining({
       id: satellitePacket.id,
@@ -267,5 +332,12 @@ test("satellite add accepts a one-day cartesianVelocity trajectory", async ({
     }),
   );
   expect(requests[1]?.relevantPackets).toContainEqual(satellitePacket);
+  const advancedDiagnostics = await readSceneDiagnostics(page);
+  expect(advancedDiagnostics.entities[0]?.positionAtCurrentTime).not.toEqual(
+    firstPosition,
+  );
+  expect(Date.parse(advancedDiagnostics.clock!.currentTime)).toBeGreaterThan(
+    Date.parse(firstDiagnostics.clock!.currentTime),
+  );
   expect(browserErrors).toEqual([]);
 });

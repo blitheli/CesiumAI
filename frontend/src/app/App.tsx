@@ -18,6 +18,7 @@ import type {
   SceneOp,
   SceneSummary,
 } from "../contracts/chat";
+import type { SceneDiagnostics } from "../scene/CesiumSceneManager";
 import { inferRelevantEntityIds } from "../scene/summary";
 import "../styles.css";
 
@@ -26,6 +27,7 @@ export interface AppSceneManager extends ViewerSceneManager {
   getSelectedEntityIds(): string[];
   pickRelevantPackets(ids: string[]): CzmlPacket[];
   applySceneOps(operations: SceneOp[]): Promise<void>;
+  getSceneDiagnostics(): SceneDiagnostics;
 }
 
 export type ChatClient = (
@@ -52,6 +54,8 @@ export function App({
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sceneDiagnostics, setSceneDiagnostics] =
+    useState<SceneDiagnostics | null>(null);
   const messageSequence = useRef(0);
   const activeControllers = useRef(new Set<AbortController>());
 
@@ -106,6 +110,7 @@ export function App({
       setSessionId(response.sessionId);
       addMessage("assistant", response.message);
       await sceneManager.applySceneOps(response.sceneOps);
+      setSceneDiagnostics(sceneManager.getSceneDiagnostics());
     } catch (requestError) {
       setError(errorMessage(requestError));
     } finally {
@@ -118,6 +123,18 @@ export function App({
     <main className="app-shell" aria-label="CesiumAI">
       <section className="viewer-pane" aria-label="三维场景">
         <ViewerComponent sceneManager={sceneManager} />
+        {sceneDiagnostics ? (
+          <output
+            className="scene-diagnostics"
+            aria-label="场景诊断"
+            data-scene-diagnostics={JSON.stringify(sceneDiagnostics)}
+          >
+            {sceneDiagnostics.entities.length} 个实体
+            {sceneDiagnostics.clock
+              ? ` · 时钟 ${sceneDiagnostics.clock.currentTime}`
+              : ""}
+          </output>
+        ) : null}
       </section>
       <ChatPanel
         messages={messages}
