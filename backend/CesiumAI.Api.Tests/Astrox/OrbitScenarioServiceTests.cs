@@ -260,7 +260,9 @@ public class OrbitScenarioServiceTests
         });
 
         var service = CreateService(handler);
-        using JsonDocument requestDocument = JsonDocument.Parse("""{"Step":60,"CentralBody":"Earth"}""");
+        const string requestJson =
+            """{"Start":"2026-07-16T00:00:00.000Z","Stop":"2026-07-16T01:00:00.000Z","Step":60,"CentralBody":"Earth"}""";
+        using JsonDocument requestDocument = JsonDocument.Parse(requestJson);
         DateTimeOffset start = DateTimeOffset.Parse("2026-07-16T00:00:00Z");
         DateTimeOffset stop = DateTimeOffset.Parse("2026-07-16T01:00:00Z");
 
@@ -275,8 +277,7 @@ public class OrbitScenarioServiceTests
             cancellationToken: CancellationToken.None);
 
         requestedPaths.Should().Equal("/Propagator/TwoBody");
-        capturedBody.Should().Be("""{"Step":60,"CentralBody":"Earth"}""");
-
+        capturedBody.Should().Be(requestJson);
         packet.EnumerateObject().Select(property => property.Name).Should().BeEquivalentTo(
             ["id", "name", "availability", "position", "point", "path", "properties"]);
         packet.GetProperty("id").GetString().Should().Be("sat-twobody");
@@ -342,7 +343,8 @@ public class OrbitScenarioServiceTests
                 }
                 """)));
         var service = CreateService(handler);
-        using JsonDocument requestDocument = JsonDocument.Parse("""{"Step":60}""");
+        using JsonDocument requestDocument = JsonDocument.Parse(
+            """{"Start":"2026-07-16T00:00:00Z","Stop":"2026-07-16T01:00:00Z","Step":60}""");
         JsonElement? packet = null;
 
         Func<Task> act = async () => packet = await service.CreatePacketFromPropagationAsync(
@@ -376,7 +378,8 @@ public class OrbitScenarioServiceTests
                 }
                 """)));
         var service = CreateService(handler);
-        using JsonDocument requestDocument = JsonDocument.Parse("""{"Step":60}""");
+        using JsonDocument requestDocument = JsonDocument.Parse(
+            """{"Start":"2026-07-16T00:00:00Z","Stop":"2026-07-16T01:00:00Z","Step":60}""");
         JsonElement? packet = null;
 
         Func<Task> act = async () => packet = await service.CreatePacketFromPropagationAsync(
@@ -391,6 +394,70 @@ public class OrbitScenarioServiceTests
 
         await act.Should().ThrowAsync<ArgumentException>();
         packet.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CreatePacketFromPropagationAsync_RejectsMissingStartStopStep_WithoutHttp()
+    {
+        var httpCalls = 0;
+        var handler = new StubHttpMessageHandler((_, _) =>
+        {
+            httpCalls++;
+            throw new InvalidOperationException("校验失败时不得发往 Astrox。");
+        });
+        var service = CreateService(handler);
+        using JsonDocument requestDocument = JsonDocument.Parse("""{"Step":60,"CentralBody":"Earth"}""");
+
+        Func<Task> act = async () => await service.CreatePacketFromPropagationAsync(
+            "sat-1",
+            "sat-1",
+            "/Propagator/TwoBody",
+            requestDocument.RootElement,
+            DateTimeOffset.Parse("2026-07-16T00:00:00Z"),
+            DateTimeOffset.Parse("2026-07-16T01:00:00Z"),
+            null,
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        httpCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task CreatePacketFromPropagationAsync_RejectsMultiYearOrOneSecondMismatch_WithoutHttp()
+    {
+        var httpCalls = 0;
+        var handler = new StubHttpMessageHandler((_, _) =>
+        {
+            httpCalls++;
+            throw new InvalidOperationException("校验失败时不得发往 Astrox。");
+        });
+        var service = CreateService(handler);
+        DateTimeOffset start = DateTimeOffset.Parse("2026-07-16T00:00:00Z");
+        DateTimeOffset stop = DateTimeOffset.Parse("2026-07-16T01:00:00Z");
+
+        using JsonDocument multiYear = JsonDocument.Parse("""
+            {
+              "Start": "2020-01-01T00:00:00Z",
+              "Stop": "2026-07-16T00:00:00Z",
+              "Step": 60
+            }
+            """);
+        using JsonDocument oneSecond = JsonDocument.Parse("""
+            {
+              "Start": "2026-07-16T00:00:00Z",
+              "Stop": "2026-07-16T00:00:01Z",
+              "Step": 1
+            }
+            """);
+
+        Func<Task> multiYearAct = async () => await service.CreatePacketFromPropagationAsync(
+            "sat-1", "sat-1", "/Propagator/SGP4", multiYear.RootElement, start, stop, null, CancellationToken.None);
+        Func<Task> oneSecondAct = async () => await service.CreatePacketFromPropagationAsync(
+            "sat-1", "sat-1", "/Propagator/SGP4", oneSecond.RootElement, start, stop, null, CancellationToken.None);
+
+        await multiYearAct.Should().ThrowAsync<ArgumentException>();
+        await oneSecondAct.Should().ThrowAsync<ArgumentException>();
+        httpCalls.Should().Be(0);
     }
 
     [Theory]

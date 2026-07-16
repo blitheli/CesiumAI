@@ -226,7 +226,7 @@ cd frontend && npx playwright install chromium
 
 1. 先加载 SGP4/TLE 相关 skill
 2. 使用受限 `HttpGet` 查询 NORAD Catalog Number `25544` 的最新 TLE
-3. 调用 `PropagateAndAddSatellite`（未来 24 小时、步长 60 秒）
+3. 调用专用 Tool `PropagateIssAndAddSatellite`（由 skill/TLE 构造 requestJson；服务端注入 `/Propagator/SGP4` 的 Start/Stop/Step，默认当前 UTC 截断到分钟起、未来 24 小时、步长 60 秒）
 
 若 TLE 查询失败、结果不唯一或响应缺少两行根数，则禁止传播且不产生 `sceneOps`。用户明确指定时长或步长时可覆盖对应默认值。
 

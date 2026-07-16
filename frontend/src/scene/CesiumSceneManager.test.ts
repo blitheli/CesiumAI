@@ -921,6 +921,12 @@ it("按序 await 相机控制器，失败时停止后续操作", async () => {
       .mockRejectedValueOnce(new Error("相机目标无效")),
     onSceneCleared: vi.fn(),
     onEntitiesDeleted: vi.fn(),
+    beginEntityReplacement: vi.fn(() => ({
+      commit: vi.fn(),
+      rollback: vi.fn(),
+    })),
+    snapshotTrackedTargetId: vi.fn(() => null),
+    rebindAfterReload: vi.fn(),
     destroy: vi.fn(),
     getDiagnostics: vi.fn(() => ({
       trackedEntityId: null,
@@ -973,6 +979,12 @@ it("相机 flyTo 失败时 SceneManager 停止后续操作", async () => {
     }),
     onSceneCleared: vi.fn(),
     onEntitiesDeleted: vi.fn(),
+    beginEntityReplacement: vi.fn(() => ({
+      commit: vi.fn(),
+      rollback: vi.fn(),
+    })),
+    snapshotTrackedTargetId: vi.fn(() => null),
+    rebindAfterReload: vi.fn(),
     destroy: vi.fn(),
     getDiagnostics: vi.fn(() => ({
       trackedEntityId: null,
@@ -1012,6 +1024,12 @@ it("clear/delete/destroy 时通知相机控制器清理", async () => {
     apply: vi.fn(async () => undefined),
     onSceneCleared: vi.fn(),
     onEntitiesDeleted: vi.fn(),
+    beginEntityReplacement: vi.fn(() => ({
+      commit: vi.fn(),
+      rollback: vi.fn(),
+    })),
+    snapshotTrackedTargetId: vi.fn(() => null),
+    rebindAfterReload: vi.fn(),
     destroy: vi.fn(),
     getDiagnostics: vi.fn(() => ({
       trackedEntityId: null,
@@ -1040,4 +1058,294 @@ it("clear/delete/destroy 时通知相机控制器清理", async () => {
 
   manager.destroy();
   expect(cameraController.destroy).toHaveBeenCalledOnce();
+});
+
+it("clear 先成功 load/提交 document 再清相机；load 失败保留 track/orbit", async () => {
+  const load = vi
+    .fn()
+    .mockResolvedValueOnce(undefined) // initialize
+    .mockRejectedValueOnce(new Error("load failed"))
+    .mockResolvedValueOnce(undefined); // successful clear
+  const port = createPort({ load });
+  const cameraController = {
+    apply: vi.fn(async () => undefined),
+    onSceneCleared: vi.fn(),
+    onEntitiesDeleted: vi.fn(),
+    beginEntityReplacement: vi.fn(() => ({
+      commit: vi.fn(),
+      rollback: vi.fn(),
+    })),
+    snapshotTrackedTargetId: vi.fn(() => null),
+    rebindAfterReload: vi.fn(),
+    destroy: vi.fn(),
+    getDiagnostics: vi.fn(() => ({
+      trackedEntityId: "iss",
+      orbitActive: false,
+      orbitTargetId: null,
+      orbitHeadingDegrees: null,
+      headingDegrees: null,
+      positionWC: null,
+    })),
+  };
+  const manager = new CesiumSceneManager(
+    createEmpty,
+    port,
+    cameraController,
+  );
+  await manager.initialize();
+  await manager.applySceneOps([
+    { op: "upsert", packets: [{ id: "iss", name: "ISS" }] },
+  ]);
+
+  await expect(manager.applySceneOps([{ op: "clear" }])).rejects.toThrow(
+    /load failed/,
+  );
+  expect(cameraController.onSceneCleared).not.toHaveBeenCalled();
+  expect(manager.pickRelevantPackets(["iss"])).toEqual([
+    { id: "iss", name: "ISS" },
+  ]);
+
+  await manager.applySceneOps([{ op: "clear" }]);
+  expect(load).toHaveBeenCalledTimes(3);
+  expect(cameraController.onSceneCleared).toHaveBeenCalledOnce();
+  // 清相机发生在 load 成功之后（最后一次 load 调用之后）
+  const loadOrder = load.mock.invocationCallOrder[2]!;
+  const clearOrder =
+    cameraController.onSceneCleared.mock.invocationCallOrder[0]!;
+  expect(clearOrder).toBeGreaterThan(loadOrder);
+});
+
+it("upsert/style 替换实体时通过事务 hook 在成功后重绑、失败 rollback 后重绑", async () => {
+  const port = createPort();
+  const commit = vi.fn();
+  const rollback = vi.fn();
+  const beginEntityReplacement = vi.fn(() => ({ commit, rollback }));
+  const snapshotTrackedTargetId = vi.fn(() => "iss");
+  const rebindAfterReload = vi.fn();
+  const cameraController = {
+    apply: vi.fn(async () => undefined),
+    onSceneCleared: vi.fn(),
+    onEntitiesDeleted: vi.fn(),
+    beginEntityReplacement,
+    snapshotTrackedTargetId,
+    rebindAfterReload,
+    destroy: vi.fn(),
+    getDiagnostics: vi.fn(() => ({
+      trackedEntityId: "iss",
+      orbitActive: false,
+      orbitTargetId: null,
+      orbitHeadingDegrees: null,
+      headingDegrees: null,
+      positionWC: null,
+    })),
+  };
+  const manager = new CesiumSceneManager(
+    createEmpty,
+    port,
+    cameraController,
+  );
+  await manager.initialize();
+
+  await manager.applySceneOps([
+    { op: "upsert", packets: [{ id: "iss", path: { width: 2 } }] },
+  ]);
+  expect(beginEntityReplacement).toHaveBeenCalledWith(["iss"]);
+  expect(commit).toHaveBeenCalledOnce();
+  expect(rollback).not.toHaveBeenCalled();
+
+  commit.mockClear();
+  beginEntityReplacement.mockClear();
+  rebindAfterReload.mockClear();
+  port.process = vi.fn(async () => {
+    throw new Error("process failed");
+  });
+  port.load = vi.fn(async () => undefined);
+
+  await expect(
+    manager.applySceneOps([
+      { op: "style", id: "iss", patch: { path: { width: 9 } } },
+    ]),
+  ).rejects.toThrow(/process failed/);
+
+  expect(beginEntityReplacement).toHaveBeenCalledWith(["iss"]);
+  expect(commit).not.toHaveBeenCalled();
+  expect(rebindAfterReload).toHaveBeenCalledWith("iss");
+});
+
+it("跟踪 B 时更新 A 失败：load 回滚后仍按 B 无条件重绑", async () => {
+  const port = createPort();
+  const commit = vi.fn();
+  const beginEntityReplacement = vi.fn(() => ({
+    commit,
+    rollback: vi.fn(),
+  }));
+  const snapshotTrackedTargetId = vi.fn(() => "entity-b");
+  const rebindAfterReload = vi.fn();
+  const cameraController = {
+    apply: vi.fn(async () => undefined),
+    onSceneCleared: vi.fn(),
+    onEntitiesDeleted: vi.fn(),
+    beginEntityReplacement,
+    snapshotTrackedTargetId,
+    rebindAfterReload,
+    destroy: vi.fn(),
+    getDiagnostics: vi.fn(() => ({
+      trackedEntityId: "entity-b",
+      orbitActive: false,
+      orbitTargetId: null,
+      orbitHeadingDegrees: null,
+      headingDegrees: null,
+      positionWC: null,
+    })),
+  };
+  const manager = new CesiumSceneManager(
+    createEmpty,
+    port,
+    cameraController,
+  );
+  await manager.initialize();
+
+  await manager.applySceneOps([
+    {
+      op: "upsert",
+      packets: [
+        { id: "entity-a", name: "A" },
+        { id: "entity-b", name: "B" },
+      ],
+    },
+  ]);
+
+  commit.mockClear();
+  beginEntityReplacement.mockClear();
+  snapshotTrackedTargetId.mockClear();
+  rebindAfterReload.mockClear();
+
+  port.process = vi.fn(async () => {
+    throw new Error("update A failed");
+  });
+  const load = vi.fn(async () => undefined);
+  port.load = load;
+
+  await expect(
+    manager.applySceneOps([
+      { op: "upsert", packets: [{ id: "entity-a", name: "A2" }] },
+    ]),
+  ).rejects.toThrow(/update A failed/);
+
+  expect(beginEntityReplacement).toHaveBeenCalledWith(["entity-a"]);
+  expect(snapshotTrackedTargetId).toHaveBeenCalled();
+  expect(load).toHaveBeenCalled();
+  // 即使替换的是 A，跟踪的是 B，rollback load 后也必须重绑 B。
+  expect(rebindAfterReload).toHaveBeenCalledWith("entity-b");
+  expect(commit).not.toHaveBeenCalled();
+});
+
+function createCameraStub(trackedId: string | null = "iss") {
+  return {
+    apply: vi.fn(async () => undefined),
+    onSceneCleared: vi.fn(),
+    onEntitiesDeleted: vi.fn(),
+    beginEntityReplacement: vi.fn(() => ({
+      commit: vi.fn(),
+      rollback: vi.fn(),
+    })),
+    snapshotTrackedTargetId: vi.fn(() => trackedId),
+    rebindAfterReload: vi.fn(),
+    destroy: vi.fn(),
+    getDiagnostics: vi.fn(() => ({
+      trackedEntityId: trackedId,
+      orbitActive: false,
+      orbitTargetId: null,
+      orbitHeadingDegrees: null,
+      headingDegrees: null,
+      positionWC: null,
+    })),
+  };
+}
+
+it("upsert：load 成功后 restoreViewerClock 抛错仍调用 rebind，并以 AggregateError 失败", async () => {
+  const processError = new Error("upsert process failed");
+  const restoreError = new Error("restore clock failed");
+  const port = createPort({
+    process: vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(processError),
+    restoreViewerClock: vi.fn(() => {
+      throw restoreError;
+    }),
+  });
+  const cameraController = createCameraStub("iss");
+  const manager = new CesiumSceneManager(
+    createEmpty,
+    port,
+    cameraController,
+  );
+  await manager.initialize();
+  await manager.applySceneOps([
+    { op: "upsert", packets: [{ id: "iss", name: "ISS" }] },
+  ]);
+  cameraController.rebindAfterReload.mockClear();
+
+  let caught: unknown;
+  try {
+    await manager.applySceneOps([
+      { op: "upsert", packets: [{ id: "iss", name: "ISS2" }] },
+    ]);
+  } catch (error) {
+    caught = error;
+  }
+
+  expect(cameraController.rebindAfterReload).toHaveBeenCalledWith("iss");
+  expect(caught).toBeInstanceOf(AggregateError);
+  const aggregate = caught as AggregateError;
+  expect(aggregate.message).toMatch(/could not be restored|upsert/i);
+  expect(aggregate.errors).toEqual([processError, restoreError]);
+});
+
+it("style：load 成功后 restore 与 rebind 均失败时 AggregateError 保留全部错误", async () => {
+  const processError = new Error("style process failed");
+  const restoreError = new Error("restore clock failed");
+  const rebindError = new Error("rebind failed");
+  const port = createPort({
+    process: vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(processError),
+    restoreViewerClock: vi.fn(() => {
+      throw restoreError;
+    }),
+  });
+  const cameraController = createCameraStub("iss");
+  cameraController.rebindAfterReload = vi.fn(() => {
+    throw rebindError;
+  });
+  const manager = new CesiumSceneManager(
+    createEmpty,
+    port,
+    cameraController,
+  );
+  await manager.initialize();
+  await manager.applySceneOps([
+    { op: "upsert", packets: [{ id: "iss", path: { width: 2 } }] },
+  ]);
+
+  let caught: unknown;
+  try {
+    await manager.applySceneOps([
+      { op: "style", id: "iss", patch: { path: { width: 9 } } },
+    ]);
+  } catch (error) {
+    caught = error;
+  }
+
+  expect(cameraController.rebindAfterReload).toHaveBeenCalledWith("iss");
+  expect(caught).toBeInstanceOf(AggregateError);
+  const aggregate = caught as AggregateError;
+  expect(aggregate.message).toMatch(/style|无法恢复/);
+  expect(aggregate.errors).toEqual([
+    processError,
+    restoreError,
+    rebindError,
+  ]);
 });

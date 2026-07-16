@@ -27,21 +27,21 @@ public class AgentInstructionsTests
     }
 
     [Fact]
-    public void Text_DocumentsIssDefaultLoadSkillThenHttpGetThenPropagate()
+    public void Text_DocumentsIssDefaultLoadSkillThenHttpGetThenPropagateIssTool()
     {
-        // ISS 默认顺序：先 load SGP4/TLE skill → HttpGet 查询 NORAD 25544 最新 TLE → PropagateAndAddSatellite，24h/60s。
+        // ISS 默认顺序：先 load SGP4/TLE skill → HttpGet 查询 NORAD 25544 最新 TLE → PropagateIssAndAddSatellite，24h/60s。
         AgentInstructions.Text.Should().Contain("25544");
         AgentInstructions.Text.Should().Contain("HttpGet");
         AgentInstructions.Text.Should().Contain("TLE");
         AgentInstructions.Text.Should().Contain("SGP4");
-        AgentInstructions.Text.Should().Contain("PropagateAndAddSatellite");
+        AgentInstructions.Text.Should().Contain("PropagateIssAndAddSatellite");
         AgentInstructions.Text.Should().Contain("24");
         AgentInstructions.Text.Should().Contain("60");
         AgentInstructions.Text.Should().MatchRegex("国际空间站|ISS");
 
         // 在 ISS 规则段落内断言顺序，避免被前文通用 PropagateAndAddSatellite 干扰。
         AgentInstructions.Text.Should().MatchRegex(
-            @"国际空间站[\s\S]*?SGP4/TLE[\s\S]*?HttpGet[\s\S]*?25544[\s\S]*?PropagateAndAddSatellite");
+            @"国际空间站[\s\S]*?SGP4/TLE[\s\S]*?HttpGet[\s\S]*?25544[\s\S]*?PropagateIssAndAddSatellite");
     }
 
     [Fact]

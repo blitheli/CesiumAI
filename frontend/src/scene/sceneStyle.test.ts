@@ -201,3 +201,29 @@ it("accepts all allowed top-level visual keys", () => {
   expect(result.point).toEqual({ pixelSize: 1 });
   expect(result.ellipse).toEqual({ semiMajorAxis: 1 });
 });
+
+it.each([
+  { billboard: { image: "https://evil.example/a.png" } },
+  { billboard: { uri: "/local/icon.png" } },
+  { billboard: { url: "data:image/png;base64,xx" } },
+  { model: { gltf: "https://evil.example/m.gltf" } },
+  { model: { uri: "models/sat.glb" } },
+  { model: { url: "https://evil.example/m.glb" } },
+  { billboard: { scale: 2, nested: { image: "x.png" } } },
+  { model: { scale: 1, nodeTransformations: { a: { uri: "y" } } } },
+])("rejects external resource keys in billboard/model %j", (patch) => {
+  expect(() => applyStylePatch(basePacket, patch)).toThrow();
+});
+
+it("allows null external resource keys and other visual field updates", () => {
+  const result = applyStylePatch(basePacket, {
+    billboard: { image: null, scale: 2 },
+    model: { gltf: null, uri: null, url: null, scale: 1 },
+    path: { width: 5 },
+  });
+
+  expect(result.billboard).toEqual({ scale: 2 });
+  expect(result.model).toEqual({ scale: 1 });
+  expect(result.path).toMatchObject({ width: 5 });
+  expect(result.position).toEqual(basePacket.position);
+});

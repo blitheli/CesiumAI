@@ -69,6 +69,8 @@ public sealed class OrbitScenarioService : IOrbitScenarioService
     {
         ValidatePacketIdentity(id, name);
         ValidateAvailabilityWindow(startUtc, stopUtc);
+        // 发往 Astrox 前强制校验请求根 Start/Stop/Step，失败不发 HTTP。
+        PropagationRequestValidator.Validate(request, startUtc, stopUtc);
 
         GenericPropagationResponse response = await _astroxClient.PropagateAsync(
             propagatorPath,

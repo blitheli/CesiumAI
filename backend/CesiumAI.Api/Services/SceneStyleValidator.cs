@@ -43,6 +43,20 @@ public sealed class SceneStyleValidator : ISceneStyleValidator
         "scale"
     };
 
+    private static readonly HashSet<string> ExternalResourceContainers = new(StringComparer.Ordinal)
+    {
+        "billboard",
+        "model"
+    };
+
+    private static readonly HashSet<string> ForbiddenExternalResourceKeys = new(StringComparer.Ordinal)
+    {
+        "image",
+        "gltf",
+        "uri",
+        "url"
+    };
+
     public JsonElement ValidateAndClone(JsonElement patch)
     {
         if (patch.ValueKind != JsonValueKind.Object)
@@ -69,13 +83,17 @@ public sealed class SceneStyleValidator : ISceneStyleValidator
                 nameof(patch));
         }
 
-        ValidateNode(patch, depth: 1, isTopLevel: true);
+        ValidateNode(patch, depth: 1, isTopLevel: true, insideBillboardOrModel: false);
 
         using JsonDocument cloneDocument = JsonDocument.Parse(utf8);
         return cloneDocument.RootElement.Clone();
     }
 
-    private static void ValidateNode(JsonElement node, int depth, bool isTopLevel)
+    private static void ValidateNode(
+        JsonElement node,
+        int depth,
+        bool isTopLevel,
+        bool insideBillboardOrModel)
     {
         if (depth > MaxDepth)
         {
@@ -94,8 +112,14 @@ public sealed class SceneStyleValidator : ISceneStyleValidator
 
                     if (property.Value.ValueKind == JsonValueKind.Null)
                     {
-                        // 允许用 null 删除已允许的视觉字段。
+                        // 允许用 null 删除已允许的视觉字段（含外部资源键）。
                         continue;
+                    }
+
+                    if (insideBillboardOrModel && ForbiddenExternalResourceKeys.Contains(property.Name))
+                    {
+                        throw new ArgumentException(
+                            $"样式 patch 禁止在 billboard/model 内设置非 null 的外部资源字段：'{property.Name}'。");
                     }
 
                     if (string.Equals(property.Name, "rgba", StringComparison.Ordinal))
@@ -110,7 +134,9 @@ public sealed class SceneStyleValidator : ISceneStyleValidator
                         continue;
                     }
 
-                    ValidateNode(property.Value, depth + 1, isTopLevel: false);
+                    bool nextInside = insideBillboardOrModel
+                        || (isTopLevel && ExternalResourceContainers.Contains(property.Name));
+                    ValidateNode(property.Value, depth + 1, isTopLevel: false, nextInside);
                 }
 
                 break;
@@ -125,7 +151,7 @@ public sealed class SceneStyleValidator : ISceneStyleValidator
                         throw new ArgumentException($"样式 patch 数组长度不能超过 {MaxArrayLength}。");
                     }
 
-                    ValidateNode(item, depth + 1, isTopLevel: false);
+                    ValidateNode(item, depth + 1, isTopLevel: false, insideBillboardOrModel);
                 }
 
                 break;

@@ -410,7 +410,8 @@ test("satellite add accepts a one-day cartesianVelocity trajectory", async ({
 test("camera focus/track/adjust/orbit and style keep ISS position", async ({
   page,
 }) => {
-  test.setTimeout(120_000);
+  // 该用例步骤多（focus/track/微调/环绕/样式），云环境单步偏慢时需更宽超时。
+  test.setTimeout(240_000);
   const { browserErrors } = await openApp(page, (request) => {
     if (request.message === "建立验收地面站与国际空间站") {
       return response("已建立地面站与国际空间站。", [

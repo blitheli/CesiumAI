@@ -32,7 +32,8 @@ public class AgentFactoryTests
     private static readonly string[] RequiredGenericOrbitTools =
     [
         "PropagateAndAddSatellite",
-        "AddSatelliteFromPositions"
+        "AddSatelliteFromPositions",
+        "PropagateIssAndAddSatellite"
     ];
 
     [Fact]

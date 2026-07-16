@@ -466,6 +466,94 @@ it("focus 在 flyTo 失败时抛错", async () => {
   ).rejects.toThrow(/flyTo|未能完成/i);
 });
 
+it("focus 先校验目标并退出 track/orbit；成功后旧模式清除", async () => {
+  const iss = createEntity("iss", { x: 1, y: 2, z: 3 });
+  const gs = createEntity("gs", { x: 4, y: 5, z: 6 });
+  const fake = createAdapter({ entities: [iss, gs] });
+  const controller = createController(fake.adapter);
+
+  await controller.apply(
+    cameraOp({
+      action: "orbitStart",
+      targetId: "iss",
+      angularSpeedDegreesPerSecond: 10,
+    }),
+  );
+  expect(controller.getDiagnostics().orbitActive).toBe(true);
+
+  await controller.apply(
+    cameraOp({ action: "focus", targetId: "gs", distanceMeters: 500 }),
+  );
+
+  expect(fake.flyTo).toHaveBeenCalled();
+  expect(controller.getDiagnostics().orbitActive).toBe(false);
+  expect(controller.getDiagnostics().trackedEntityId).toBeNull();
+});
+
+it("focus 在 flyTo 失败时恢复先前的 track 状态", async () => {
+  const iss = createEntity("iss", { x: 1, y: 2, z: 3 });
+  const gs = createEntity("gs", { x: 4, y: 5, z: 6 });
+  const fake = createAdapter({
+    entities: [iss, gs],
+    flyToResult: false,
+  });
+  const controller = createController(fake.adapter);
+
+  await controller.apply(cameraOp({ action: "track", targetId: "iss" }));
+  expect(controller.getDiagnostics().trackedEntityId).toBe("iss");
+
+  await expect(
+    controller.apply(cameraOp({ action: "focus", targetId: "gs" })),
+  ).rejects.toThrow(/flyTo|未能完成/i);
+
+  expect(controller.getDiagnostics().trackedEntityId).toBe("iss");
+  expect(fake.setTrackedEntity).toHaveBeenLastCalledWith(iss);
+});
+
+it("focus 在 flyTo 失败时恢复先前的 orbit 状态", async () => {
+  const iss = createEntity("iss", { x: 1, y: 2, z: 3 });
+  const gs = createEntity("gs", { x: 4, y: 5, z: 6 });
+  const fake = createAdapter({
+    entities: [iss, gs],
+    flyToResult: false,
+  });
+  const controller = createController(fake.adapter);
+
+  await controller.apply(
+    cameraOp({
+      action: "orbitStart",
+      targetId: "iss",
+      angularSpeedDegreesPerSecond: 12,
+      headingDegrees: 30,
+    }),
+  );
+  const before = controller.getDiagnostics();
+  expect(before.orbitActive).toBe(true);
+  expect(before.orbitTargetId).toBe("iss");
+
+  await expect(
+    controller.apply(cameraOp({ action: "focus", targetId: "gs" })),
+  ).rejects.toThrow(/flyTo|未能完成/i);
+
+  const after = controller.getDiagnostics();
+  expect(after.orbitActive).toBe(true);
+  expect(after.orbitTargetId).toBe("iss");
+  expect(fake.tickListeners.length).toBe(1);
+});
+
+it("focus 目标不存在时不清除既有 track/orbit", async () => {
+  const iss = createEntity("iss", { x: 1, y: 2, z: 3 });
+  const fake = createAdapter({ entities: [iss] });
+  const controller = createController(fake.adapter);
+
+  await controller.apply(cameraOp({ action: "track", targetId: "iss" }));
+  await expect(
+    controller.apply(cameraOp({ action: "focus", targetId: "missing" })),
+  ).rejects.toThrow(/不存在/);
+
+  expect(controller.getDiagnostics().trackedEntityId).toBe("iss");
+});
+
 it("track/orbitStep/orbitStart 校验失败时保留原有 track/orbit 状态", async () => {
   const entity = createEntity("iss", { x: 1, y: 2, z: 3 });
   const ghost = createEntity("ghost");
@@ -608,6 +696,48 @@ it("track 与 orbit 互斥：track 停止环绕，orbit 清除跟随", async () 
   );
   expect(fake.setTrackedEntity).toHaveBeenCalledWith(undefined);
   expect(fake.tickListeners).toHaveLength(1);
+});
+
+it("beginEntityReplacement 在 commit/rollback 后重绑正在 track 的实体", async () => {
+  const iss = createEntity("iss", { x: 1, y: 2, z: 3 });
+  const fake = createAdapter({ entities: [iss] });
+  const controller = createController(fake.adapter);
+
+  await controller.apply(cameraOp({ action: "track", targetId: "iss" }));
+  expect(controller.getDiagnostics().trackedEntityId).toBe("iss");
+
+  const replacement = createEntity("iss", { x: 9, y: 8, z: 7 });
+  const tx = controller.beginEntityReplacement(["iss"]);
+  fake.entities.set("iss", replacement);
+
+  tx.commit();
+  expect(fake.setTrackedEntity).toHaveBeenLastCalledWith(replacement);
+  expect(controller.getDiagnostics().trackedEntityId).toBe("iss");
+
+  const restored = createEntity("iss", { x: 1, y: 2, z: 3 });
+  const tx2 = controller.beginEntityReplacement(["iss"]);
+  fake.entities.set("iss", restored);
+  tx2.rollback();
+  expect(fake.setTrackedEntity).toHaveBeenLastCalledWith(restored);
+  expect(controller.getDiagnostics().trackedEntityId).toBe("iss");
+});
+
+it("snapshotTrackedTargetId/rebindAfterReload：无 track 时 no-op，有 track 时按 id 重绑", async () => {
+  const entityB = createEntity("entity-b", { x: 1, y: 2, z: 3 });
+  const fake = createAdapter({ entities: [entityB] });
+  const controller = createController(fake.adapter);
+
+  expect(controller.snapshotTrackedTargetId()).toBeNull();
+  controller.rebindAfterReload(null);
+  expect(fake.setTrackedEntity).not.toHaveBeenCalled();
+
+  await controller.apply(cameraOp({ action: "track", targetId: "entity-b" }));
+  expect(controller.snapshotTrackedTargetId()).toBe("entity-b");
+
+  const reloadedB = createEntity("entity-b", { x: 9, y: 9, z: 9 });
+  fake.entities.set("entity-b", reloadedB);
+  controller.rebindAfterReload("entity-b");
+  expect(fake.setTrackedEntity).toHaveBeenLastCalledWith(reloadedB);
 });
 
 it("orbitStop、clear、目标删除和 destroy 都移除 tick listener", async () => {

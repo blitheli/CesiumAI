@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using CesiumAI.Api.Astrox;
 using CesiumAI.Api.Models;
 using CesiumAI.Api.Services;
@@ -230,6 +231,18 @@ public sealed class SceneTools(
                 break;
 
             case CameraAction.Rotate:
+                // 至少一个 heading/pitch/roll 非零，否则无意义且不写 op。
+                bool hasNonZeroAngle =
+                    (headingDegrees is not null and not 0)
+                    || (pitchDegrees is not null and not 0)
+                    || (rollDegrees is not null and not 0);
+                if (!hasNonZeroAngle)
+                {
+                    throw new ArgumentException(
+                        "rotate 要求 headingDegrees、pitchDegrees、rollDegrees 至少一个非零。",
+                        nameof(action));
+                }
+
                 break;
         }
 
@@ -356,6 +369,9 @@ public sealed class SceneTools(
             throw new ArgumentException("Request JSON is invalid.", nameof(requestJson), ex);
         }
 
+        // 发往 Astrox/服务前校验实际请求根 Start/Stop/Step，失败不写 op。
+        PropagationRequestValidator.Validate(request, start, stop);
+
         JsonElement packet = await _orbitScenarioService.CreatePacketFromPropagationAsync(
             satelliteId,
             satelliteName,
@@ -368,6 +384,79 @@ public sealed class SceneTools(
 
         _sceneOpSink.Add(new UpsertSceneOp([packet.Clone()]));
         // 不向模型回传大型 Position，仅返回简短确认。
+        return $"Satellite '{satelliteId}' queued for upsert.";
+    }
+
+    [Description("Add the International Space Station via SGP4. Pass skill/TLE-built requestJson; server injects Start/Stop/Step for /Propagator/SGP4 (default epoch=current UTC truncated to minute, 24h, 60s). Large positions stay server-side.")]
+    public async Task<string> PropagateIssAndAddSatellite(
+        string id,
+        string? name,
+        string requestJson,
+        double hours = 24,
+        int stepSeconds = 60,
+        string? epochUtc = null,
+        string? orbitHint = null,
+        CancellationToken cancellationToken = default)
+    {
+        string satelliteId = ValidateEntityId(id, nameof(id));
+        string satelliteName = string.IsNullOrWhiteSpace(name) ? satelliteId : name.Trim();
+
+        if (hours <= 0 || hours > 24)
+        {
+            throw new ArgumentOutOfRangeException(nameof(hours), hours, "Hours must be greater than 0 and at most 24.");
+        }
+
+        if (stepSeconds is < 1 or > 3600)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(stepSeconds),
+                stepSeconds,
+                "Step seconds must be between 1 and 3600.");
+        }
+
+        DateTimeOffset start = epochUtc is null
+            ? TruncateToMinute(_timeProvider.GetUtcNow())
+            : ParseEpochUtc(epochUtc);
+        DateTimeOffset stop = start.AddHours(hours);
+
+        if (string.IsNullOrWhiteSpace(requestJson))
+        {
+            throw new ArgumentException("Request JSON cannot be blank.", nameof(requestJson));
+        }
+
+        JsonObject root;
+        try
+        {
+            JsonNode? node = JsonNode.Parse(requestJson);
+            root = node as JsonObject
+                ?? throw new ArgumentException("Request JSON must be an object.", nameof(requestJson));
+        }
+        catch (JsonException ex)
+        {
+            throw new ArgumentException("Request JSON is invalid.", nameof(requestJson), ex);
+        }
+
+        // 只重写根 Start/Stop/Step，不猜测/改写 TLE 等其他字段；并移除大小写变体。
+        RemoveCaseInsensitiveKeys(root, "Start", "Stop", "Step");
+        root["Start"] = FormatUtcMillisecond(start);
+        root["Stop"] = FormatUtcMillisecond(stop);
+        root["Step"] = stepSeconds;
+
+        using JsonDocument requestDocument = JsonDocument.Parse(root.ToJsonString());
+        JsonElement request = requestDocument.RootElement.Clone();
+        string hint = string.IsNullOrWhiteSpace(orbitHint) ? "ISS / SGP4" : orbitHint.Trim();
+
+        JsonElement packet = await _orbitScenarioService.CreatePacketFromPropagationAsync(
+            satelliteId,
+            satelliteName,
+            "/Propagator/SGP4",
+            request,
+            start,
+            stop,
+            hint,
+            cancellationToken);
+
+        _sceneOpSink.Add(new UpsertSceneOp([packet.Clone()]));
         return $"Satellite '{satelliteId}' queued for upsert.";
     }
 
@@ -574,5 +663,20 @@ public sealed class SceneTools(
     {
         DateTimeOffset utc = value.ToUniversalTime();
         return new DateTimeOffset(utc.Year, utc.Month, utc.Day, utc.Hour, utc.Minute, 0, TimeSpan.Zero);
+    }
+
+    private static string FormatUtcMillisecond(DateTimeOffset value)
+        => value.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
+
+    private static void RemoveCaseInsensitiveKeys(JsonObject root, params string[] names)
+    {
+        List<string> toRemove = root
+            .Select(pair => pair.Key)
+            .Where(key => names.Any(name => string.Equals(key, name, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+        foreach (string key in toRemove)
+        {
+            root.Remove(key);
+        }
     }
 }

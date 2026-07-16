@@ -1,4 +1,5 @@
 import type { ChatRequest, ChatResponse } from "../contracts/chat";
+import { isSceneOpArray } from "./sceneOpsRuntime";
 
 function isChatResponse(value: unknown): value is ChatResponse {
   if (!value || typeof value !== "object") {
@@ -9,7 +10,7 @@ function isChatResponse(value: unknown): value is ChatResponse {
   return (
     typeof result.sessionId === "string" &&
     typeof result.message === "string" &&
-    Array.isArray(result.sceneOps)
+    isSceneOpArray(result.sceneOps)
   );
 }
 
@@ -48,7 +49,7 @@ export async function postChat(
 
   const body: unknown = await response.json();
   if (!isChatResponse(body)) {
-    throw new Error("Invalid chat response");
+    throw new Error("Invalid chat response: malformed sceneOps");
   }
   return body;
 }

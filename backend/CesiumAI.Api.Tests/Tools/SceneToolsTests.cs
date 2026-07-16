@@ -462,6 +462,24 @@ public class SceneToolsTests
     }
 
     [Fact]
+    public void AdjustCamera_Rotate_RejectsAllZeroOrMissingAngles_WithoutQueuingOperations()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Action missing = () => tools.AdjustCamera(action: "rotate");
+        Action allZero = () => tools.AdjustCamera(
+            action: "rotate",
+            headingDegrees: 0,
+            pitchDegrees: 0,
+            rollDegrees: 0);
+
+        missing.Should().Throw<ArgumentException>();
+        allZero.Should().Throw<ArgumentException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Fact]
     public void OrbitEntity_Step_QueuesSingleOrbitStepOperation()
     {
         var collector = new SceneOpCollector();
@@ -710,7 +728,7 @@ public class SceneToolsTests
             id: "sat-gen",
             name: "Generic Sat",
             propagatorPath: "/Propagator/SGP4",
-            requestJson: """{"Step":60}""",
+            requestJson: """{"Start":"2026-07-16T00:00:00Z","Stop":"2026-07-16T01:00:00Z","Step":60}""",
             startUtc: "2026-07-16T00:00:00Z",
             stopUtc: "2026-07-16T01:00:00Z",
             orbitHint: "SGP4 hint");
@@ -724,6 +742,8 @@ public class SceneToolsTests
         call.Name.Should().Be("Generic Sat");
         call.PropagatorPath.Should().Be("/Propagator/SGP4");
         call.Request.GetProperty("Step").GetInt32().Should().Be(60);
+        call.Request.GetProperty("Start").GetString().Should().Be("2026-07-16T00:00:00Z");
+        call.Request.GetProperty("Stop").GetString().Should().Be("2026-07-16T01:00:00Z");
         call.StartUtc.Should().Be(DateTimeOffset.Parse("2026-07-16T00:00:00Z"));
         call.StopUtc.Should().Be(DateTimeOffset.Parse("2026-07-16T01:00:00Z"));
         call.OrbitHint.Should().Be("SGP4 hint");
@@ -746,7 +766,7 @@ public class SceneToolsTests
             id: "sat-gen",
             name: null,
             propagatorPath: "/Propagator/TwoBody",
-            requestJson: """{"Step":60}""",
+            requestJson: """{"Start":"2026-07-16T00:00:00Z","Stop":"2026-07-16T01:00:00Z","Step":60}""",
             startUtc: "2026-07-16T00:00:00Z",
             stopUtc: "2026-07-16T01:00:00Z");
 
@@ -766,7 +786,7 @@ public class SceneToolsTests
             id: id,
             name: null,
             propagatorPath: "/Propagator/TwoBody",
-            requestJson: """{"Step":60}""",
+            requestJson: """{"Start":"2026-07-16T00:00:00Z","Stop":"2026-07-16T01:00:00Z","Step":60}""",
             startUtc: "2026-07-16T00:00:00Z",
             stopUtc: "2026-07-16T01:00:00Z");
 
@@ -791,12 +811,171 @@ public class SceneToolsTests
             "sat-1",
             null,
             "/Propagator/TwoBody",
-            """{"Step":60}""",
+            """{"Start":"2026-07-16T00:00:00Z","Stop":"2026-07-17T00:00:01Z","Step":60}""",
             "2026-07-16T00:00:00Z",
             "2026-07-17T00:00:01Z");
 
         await invalidJson.Should().ThrowAsync<ArgumentException>();
         await invalidWindow.Should().ThrowAsync<ArgumentException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task PropagateAndAddSatellite_RejectsRequestMissingStartStopStep_WithoutQueuingOperations()
+    {
+        // Stub 会接受非法请求；Tool/服务层必须在写 op 前拒绝。
+        var orbitService = new StubOrbitScenarioService(
+            createFromPropagation: (_, _, _, _, _, _, _, _) =>
+                Task.FromResult(CreateSatellitePacket("sat-1", "sat-1", "x")));
+        var collector = new SceneOpCollector();
+        var tools = new SceneTools(collector, orbitService);
+
+        Func<Task> act = async () => await tools.PropagateAndAddSatellite(
+            "sat-1",
+            null,
+            "/Propagator/TwoBody",
+            """{"Step":60}""",
+            "2026-07-16T00:00:00Z",
+            "2026-07-16T01:00:00Z");
+
+        // 真实路径校验在 OrbitScenarioService；Tool 侧用真实服务测。
+        // 此处用真实 OrbitScenarioService 的行为由 OrbitScenarioServiceTests 覆盖。
+        // Tool 在调用 stub 前也应自行校验，避免绕过。
+        await act.Should().ThrowAsync<ArgumentException>();
+        collector.Drain().Should().BeEmpty();
+        orbitService.PropagationCalls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task PropagateIssAndAddSatellite_InjectsStartStopStep_AndCallsSgp4Only()
+    {
+        JsonElement expectedPacket = CreateSatellitePacket("iss", "ISS", "ISS / SGP4");
+        var orbitService = new StubOrbitScenarioService(
+            createFromPropagation: (_, _, _, _, _, _, _, _) => Task.FromResult(expectedPacket));
+        var collector = new SceneOpCollector();
+        var now = DateTimeOffset.Parse("2026-07-16T10:08:59Z");
+        var tools = new SceneTools(collector, orbitService, new FixedTimeProvider(now));
+
+        // skill/TLE 构造的请求体：含 TLE 字段，故意带错误/缺失时间键；C# 只重写根 Start/Stop/Step。
+        string requestJson = """
+            {
+              "Line1": "1 25544U 98067A   26197.5  .00000000  00000+0  00000+0 0  9990",
+              "Line2": "2 25544  51.6400 123.4567 0001234  45.6789 314.5678 15.50000000123456",
+              "start": "1999-01-01T00:00:00Z",
+              "CentralBody": "Earth"
+            }
+            """;
+
+        string result = await tools.PropagateIssAndAddSatellite(
+            id: "iss",
+            name: "ISS",
+            requestJson: requestJson);
+
+        result.Should().Contain("iss");
+        orbitService.PropagationCalls.Should().ContainSingle();
+        PropagationCall call = orbitService.PropagationCalls.Single();
+        call.PropagatorPath.Should().Be("/Propagator/SGP4");
+        call.StartUtc.Should().Be(DateTimeOffset.Parse("2026-07-16T10:08:00Z"));
+        call.StopUtc.Should().Be(DateTimeOffset.Parse("2026-07-17T10:08:00Z"));
+        call.OrbitHint.Should().Be("ISS / SGP4");
+
+        JsonElement request = call.Request;
+        request.GetProperty("Start").GetString().Should().Be("2026-07-16T10:08:00.000Z");
+        request.GetProperty("Stop").GetString().Should().Be("2026-07-17T10:08:00.000Z");
+        request.GetProperty("Step").GetInt32().Should().Be(60);
+        // 不猜测/改写 TLE 字段
+        request.GetProperty("Line1").GetString().Should().StartWith("1 25544");
+        request.GetProperty("Line2").GetString().Should().StartWith("2 25544");
+        request.GetProperty("CentralBody").GetString().Should().Be("Earth");
+        // 错误大小写时间键被移除，仅保留精确 Start/Stop/Step
+        request.TryGetProperty("start", out _).Should().BeFalse();
+
+        collector.Drain().Should().ContainSingle().Which.Should().BeOfType<UpsertSceneOp>();
+    }
+
+    [Fact]
+    public async Task PropagateIssAndAddSatellite_AllowsExplicitEpochHoursStepOverrides()
+    {
+        var orbitService = new StubOrbitScenarioService(
+            createFromPropagation: (_, _, _, _, _, _, _, _) =>
+                Task.FromResult(CreateSatellitePacket("iss", "ISS", "ISS / SGP4")));
+        var collector = new SceneOpCollector();
+        var tools = new SceneTools(
+            collector,
+            orbitService,
+            new FixedTimeProvider(DateTimeOffset.Parse("2026-07-16T10:08:59Z")));
+
+        await tools.PropagateIssAndAddSatellite(
+            id: "iss",
+            name: null,
+            requestJson: """{"Line1":"1 25544","Line2":"2 25544"}""",
+            hours: 12,
+            stepSeconds: 120,
+            epochUtc: "2026-07-16T00:00:00Z");
+
+        PropagationCall call = orbitService.PropagationCalls.Single();
+        call.StartUtc.Should().Be(DateTimeOffset.Parse("2026-07-16T00:00:00Z"));
+        call.StopUtc.Should().Be(DateTimeOffset.Parse("2026-07-16T12:00:00Z"));
+        call.Request.GetProperty("Step").GetInt32().Should().Be(120);
+        call.Name.Should().Be("iss");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(24.1)]
+    [InlineData(-1)]
+    public async Task PropagateIssAndAddSatellite_RejectsInvalidHours_WithoutQueuing(double hours)
+    {
+        var orbitService = new StubOrbitScenarioService();
+        var collector = new SceneOpCollector();
+        var tools = new SceneTools(collector, orbitService);
+
+        Func<Task> act = async () => await tools.PropagateIssAndAddSatellite(
+            "iss",
+            null,
+            """{"Line1":"1","Line2":"2"}""",
+            hours: hours);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        collector.Drain().Should().BeEmpty();
+        orbitService.PropagationCalls.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(3601)]
+    public async Task PropagateIssAndAddSatellite_RejectsInvalidStep_WithoutQueuing(int stepSeconds)
+    {
+        var orbitService = new StubOrbitScenarioService();
+        var collector = new SceneOpCollector();
+        var tools = new SceneTools(collector, orbitService);
+
+        Func<Task> act = async () => await tools.PropagateIssAndAddSatellite(
+            "iss",
+            null,
+            """{"Line1":"1","Line2":"2"}""",
+            stepSeconds: stepSeconds);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        collector.Drain().Should().BeEmpty();
+        orbitService.PropagationCalls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task PropagateIssAndAddSatellite_DoesNotQueue_WhenOrbitServiceFails()
+    {
+        var orbitService = new StubOrbitScenarioService(
+            createFromPropagation: (_, _, _, _, _, _, _, _) =>
+                throw new AstroxException("sgp4 failed"));
+        var collector = new SceneOpCollector();
+        var tools = new SceneTools(collector, orbitService);
+
+        Func<Task> act = async () => await tools.PropagateIssAndAddSatellite(
+            "iss",
+            "ISS",
+            """{"Line1":"1 25544","Line2":"2 25544"}""");
+
+        await act.Should().ThrowAsync<AstroxException>();
         collector.Drain().Should().BeEmpty();
     }
 

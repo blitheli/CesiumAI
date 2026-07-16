@@ -88,7 +88,7 @@ public class SemanticJsonSizeTests
     public void Measure_ObjectKeyUsesSameBrowserAlignedStringEncoding()
     {
         using JsonDocument document = JsonDocument.Parse("{\"a<\\u2028\":null}");
-        // key JSON.stringify("a<\u2028") = "a<\u2028" => 2+1+1+3 = 7 UTF-8 bytes? 
+        // key JSON.stringify("a<\u2028") = "a<\u2028" => 2+1+1+3 = 7 UTF-8 bytes?
         // "a<" = 3 chars ASCII in quotes... full: quote + a + < + U+2028(3) + quote = 7
         // object: 2 + 7 + 1 + 4 = 14
         SemanticJsonSize.Measure(document.RootElement).Should().Be(14);

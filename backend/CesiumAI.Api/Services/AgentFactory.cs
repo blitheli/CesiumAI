@@ -76,6 +76,7 @@ public sealed class AgentFactory : IAgentRuntimeFactory, IDisposable
             AIFunctionFactory.Create(sceneTools.UpdateEntityStyle),
             AIFunctionFactory.Create(sceneTools.PropagateAndAddSatellite),
             AIFunctionFactory.Create(sceneTools.AddSatelliteFromPositions),
+            AIFunctionFactory.Create(sceneTools.PropagateIssAndAddSatellite),
             AIFunctionFactory.Create(_rawTools.HttpGet),
             AIFunctionFactory.Create(_rawTools.HttpPost)
         ];

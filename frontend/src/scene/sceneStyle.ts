@@ -25,6 +25,15 @@ const NON_NEGATIVE_NUMERIC_KEYS = new Set([
   "scale",
 ]);
 
+const EXTERNAL_RESOURCE_CONTAINERS = new Set(["billboard", "model"]);
+
+const FORBIDDEN_EXTERNAL_RESOURCE_KEYS = new Set([
+  "image",
+  "gltf",
+  "uri",
+  "url",
+]);
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -66,6 +75,7 @@ function validateNode(
   node: unknown,
   depth: number,
   isTopLevel: boolean,
+  insideBillboardOrModel: boolean,
 ): void {
   if (depth > MAX_DEPTH) {
     throw new Error(`样式 patch 嵌套深度不能超过 ${MAX_DEPTH}。`);
@@ -78,8 +88,14 @@ function validateNode(
       }
 
       if (value === null) {
-        // 允许用 null 删除已允许的视觉字段。
+        // 允许用 null 删除已允许的视觉字段（含外部资源键）。
         continue;
+      }
+
+      if (insideBillboardOrModel && FORBIDDEN_EXTERNAL_RESOURCE_KEYS.has(key)) {
+        throw new Error(
+          `样式 patch 禁止在 billboard/model 内设置非 null 的外部资源字段：'${key}'。`,
+        );
       }
 
       if (key === "rgba") {
@@ -92,7 +108,10 @@ function validateNode(
         continue;
       }
 
-      validateNode(value, depth + 1, false);
+      const nextInside =
+        insideBillboardOrModel ||
+        (isTopLevel && EXTERNAL_RESOURCE_CONTAINERS.has(key));
+      validateNode(value, depth + 1, false, nextInside);
     }
     return;
   }
@@ -102,7 +121,7 @@ function validateNode(
       throw new Error(`样式 patch 数组长度不能超过 ${MAX_ARRAY_LENGTH}。`);
     }
     for (const item of node) {
-      validateNode(item, depth + 1, false);
+      validateNode(item, depth + 1, false, insideBillboardOrModel);
     }
     return;
   }
@@ -137,7 +156,7 @@ function validateStylePatch(patch: Record<string, unknown>): void {
     );
   }
 
-  validateNode(patch, 1, true);
+  validateNode(patch, 1, true, false);
 }
 
 function deepMergeVisual(

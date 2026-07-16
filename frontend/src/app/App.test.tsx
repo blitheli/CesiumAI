@@ -260,6 +260,38 @@ it("shows API errors without retrying", async () => {
   expect(chatClient).toHaveBeenCalledOnce();
 });
 
+it("clear + 畸形 focus 在 postChat 阶段整体拒绝，manager 完全不调用", async () => {
+  const user = userEvent.setup();
+  const manager = createManager();
+  const { postChat } = await import("../api/chat");
+  vi.stubEnv("VITE_API_BASE_URL", "https://api.example");
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          sessionId: "session-1",
+          message: "不应被应用",
+          sceneOps: [
+            { op: "clear" },
+            { op: "camera", action: "focus" },
+          ],
+        }),
+      ),
+    ),
+  );
+  renderApp(manager, postChat);
+
+  await user.type(screen.getByLabelText("消息"), "清空并定位{Enter}");
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    /Invalid chat response|sceneOps/,
+  );
+  expect(manager.applySceneOps).not.toHaveBeenCalled();
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+});
+
 it("shows apply errors without reapplying scene operations", async () => {
   const user = userEvent.setup();
   const applySceneOps = vi.fn(async () => {

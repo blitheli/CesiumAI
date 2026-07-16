@@ -197,4 +197,39 @@ public class SceneStyleValidatorTests
 
         act.Should().Throw<ArgumentException>();
     }
+
+    [Theory]
+    [InlineData("""{ "billboard": { "image": "https://evil.example/a.png" } }""")]
+    [InlineData("""{ "billboard": { "uri": "/local/icon.png" } }""")]
+    [InlineData("""{ "billboard": { "url": "data:image/png;base64,xx" } }""")]
+    [InlineData("""{ "model": { "gltf": "https://evil.example/m.gltf" } }""")]
+    [InlineData("""{ "model": { "uri": "models/sat.glb" } }""")]
+    [InlineData("""{ "model": { "url": "https://evil.example/m.glb" } }""")]
+    [InlineData("""{ "billboard": { "scale": 2, "nested": { "image": "x.png" } } }""")]
+    [InlineData("""{ "model": { "scale": 1, "nodeTransformations": { "a": { "uri": "y" } } } }""")]
+    public void ValidateAndClone_RejectsExternalResourceKeysInBillboardOrModel(string patchJson)
+    {
+        using JsonDocument document = JsonDocument.Parse(patchJson);
+
+        Action act = () => _validator.ValidateAndClone(document.RootElement);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void ValidateAndClone_AllowsNullExternalResourceKeys_AndOtherVisualFields()
+    {
+        using JsonDocument document = JsonDocument.Parse("""
+            {
+              "billboard": { "image": null, "scale": 2 },
+              "model": { "gltf": null, "uri": null, "url": null, "scale": 1 },
+              "path": { "width": 5 }
+            }
+            """);
+
+        JsonElement clone = _validator.ValidateAndClone(document.RootElement);
+
+        clone.GetProperty("billboard").GetProperty("scale").GetDouble().Should().Be(2);
+        clone.GetProperty("path").GetProperty("width").GetInt32().Should().Be(5);
+    }
 }

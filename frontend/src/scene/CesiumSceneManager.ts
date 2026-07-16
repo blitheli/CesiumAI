@@ -15,6 +15,7 @@ import {
   buildSceneSummary,
   pickRelevantPackets as selectRelevantPackets,
 } from "./summary";
+import { assertNever } from "../contracts/assertNever";
 import {
   createCesiumCameraController,
   type CameraControllerPort,
@@ -352,7 +353,7 @@ export class CesiumSceneManager {
     for (const operation of operations) {
       switch (operation.op) {
         case "clear": {
-          this.cameraController?.onSceneCleared();
+          // 先成功 load/提交 document，再清相机；load 失败保留原 track/orbit。
           const nextDocument = reduceSceneDocument(
             this.sceneDocument,
             [operation],
@@ -360,6 +361,7 @@ export class CesiumSceneManager {
           );
           await port.load(cloneDocument(nextDocument));
           this.sceneDocument = nextDocument;
+          this.cameraController?.onSceneCleared();
           break;
         }
         case "upsert": {
@@ -375,6 +377,12 @@ export class CesiumSceneManager {
             businessPackets,
           );
           if (businessPackets.length > 0) {
+            const replacedIds = businessPackets.map((packet) => packet.id);
+            // load 会重建全部实体：先快照 tracked id，失败回滚后无条件重绑（即使更新 A 跟踪 B）。
+            const trackedSnapshot =
+              this.cameraController?.snapshotTrackedTargetId() ?? null;
+            const replacementTx =
+              this.cameraController?.beginEntityReplacement(replacedIds);
             const viewerClockSnapshot = port.snapshotViewerClock();
             try {
               for (const packet of businessPackets) {
@@ -388,13 +396,32 @@ export class CesiumSceneManager {
               ) {
                 port.syncViewerClock(nextClock);
               }
+              replacementTx?.commit();
             } catch (error) {
               try {
                 await port.load(cloneDocument(previousDocument));
-                port.restoreViewerClock(viewerClockSnapshot);
-              } catch (rollbackError) {
+              } catch (loadError) {
                 throw new AggregateError(
-                  [error, rollbackError],
+                  [error, loadError],
+                  "CZML upsert failed and the prior Cesium document could not be restored",
+                );
+              }
+
+              // load 成功后：restore 抛错也必须重绑；分别捕获并聚合全部错误。
+              const secondaryErrors: unknown[] = [];
+              try {
+                port.restoreViewerClock(viewerClockSnapshot);
+              } catch (restoreError) {
+                secondaryErrors.push(restoreError);
+              }
+              try {
+                this.cameraController?.rebindAfterReload(trackedSnapshot);
+              } catch (rebindError) {
+                secondaryErrors.push(rebindError);
+              }
+              if (secondaryErrors.length > 0) {
+                throw new AggregateError(
+                  [error, ...secondaryErrors],
                   "CZML upsert failed and the prior Cesium document could not be restored",
                 );
               }
@@ -429,17 +456,40 @@ export class CesiumSceneManager {
             throw new Error(`样式目标实体不存在：'${operation.id}'。`);
           }
 
+          const trackedSnapshot =
+            this.cameraController?.snapshotTrackedTargetId() ?? null;
+          const replacementTx =
+            this.cameraController?.beginEntityReplacement([operation.id]);
           const viewerClockSnapshot = port.snapshotViewerClock();
           try {
             port.removeById(operation.id);
             await port.process(cloneDocument([completePacket]));
+            replacementTx?.commit();
           } catch (error) {
             try {
               await port.load(cloneDocument(previousDocument));
-              port.restoreViewerClock(viewerClockSnapshot);
-            } catch (rollbackError) {
+            } catch (loadError) {
               throw new AggregateError(
-                [error, rollbackError],
+                [error, loadError],
+                "CZML style 失败且无法恢复先前的 Cesium document",
+              );
+            }
+
+            // load 成功后：restore 抛错也必须重绑；分别捕获并聚合全部错误。
+            const secondaryErrors: unknown[] = [];
+            try {
+              port.restoreViewerClock(viewerClockSnapshot);
+            } catch (restoreError) {
+              secondaryErrors.push(restoreError);
+            }
+            try {
+              this.cameraController?.rebindAfterReload(trackedSnapshot);
+            } catch (rebindError) {
+              secondaryErrors.push(rebindError);
+            }
+            if (secondaryErrors.length > 0) {
+              throw new AggregateError(
+                [error, ...secondaryErrors],
                 "CZML style 失败且无法恢复先前的 Cesium document",
               );
             }
@@ -452,6 +502,8 @@ export class CesiumSceneManager {
         case "camera":
           await this.requireCameraController().apply(operation);
           break;
+        default:
+          assertNever(operation, `未知 SceneOp：${JSON.stringify(operation)}`);
       }
     }
   }

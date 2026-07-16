@@ -134,10 +134,24 @@ export type CameraDiagnostics = {
   positionWC: [number, number, number] | null;
 };
 
+/** upsert/style 替换实体时的事务化重绑句柄。 */
+export type EntityReplacementTransaction = {
+  commit(): void;
+  rollback(): void;
+};
+
 export interface CameraControllerPort {
   apply(operation: CameraSceneOp): Promise<void>;
   onSceneCleared(): void;
   onEntitiesDeleted(ids: string[]): void;
+  /**
+   * 实体替换事务：若正在 track 被替换的 ID，则在 commit 后重绑到新 Entity。
+   */
+  beginEntityReplacement(ids: readonly string[]): EntityReplacementTransaction;
+  /** load 重建文档前保存当前 tracked id；无 track 时返回 null。 */
+  snapshotTrackedTargetId(): string | null;
+  /** load 后按快照 id 重绑当前新 Entity；null/找不到时 no-op。 */
+  rebindAfterReload(trackedTargetId: string | null): void;
   destroy(): void;
   /** 只读观测当前跟随/环绕/相机位置。 */
   getDiagnostics(): CameraDiagnostics;
@@ -274,27 +288,160 @@ export class CesiumCameraController implements CameraControllerPort {
     };
   }
 
+  beginEntityReplacement(ids: readonly string[]): EntityReplacementTransaction {
+    this.ensureNotDestroyed();
+    const idSet = new Set(ids);
+    const tracked = this.adapter.getTrackedEntity();
+    const trackedId =
+      tracked && idSet.has(tracked.id) ? tracked.id : null;
+
+    const rebind = () => {
+      if (!trackedId || this.destroyed) {
+        return;
+      }
+      const entity = this.adapter.getEntityById(trackedId);
+      if (entity) {
+        this.adapter.setTrackedEntity(entity);
+      }
+    };
+
+    return {
+      commit: rebind,
+      // rollback 由 SceneManager 在 load 后调用 rebindAfterReload（含跟踪非更新目标）。
+      rollback: rebind,
+    };
+  }
+
+  snapshotTrackedTargetId(): string | null {
+    if (this.destroyed) {
+      return null;
+    }
+    return this.adapter.getTrackedEntity()?.id ?? null;
+  }
+
+  rebindAfterReload(trackedTargetId: string | null): void {
+    if (this.destroyed || trackedTargetId == null || trackedTargetId.trim() === "") {
+      return;
+    }
+    const entity = this.adapter.getEntityById(trackedTargetId);
+    if (entity) {
+      this.adapter.setTrackedEntity(entity);
+    }
+  }
+
   private async focus(operation: CameraSceneOp): Promise<void> {
-    const entity = this.requireEntity(requireTargetId(operation.targetId));
+    // 先校验目标，失败不得改动既有 track/orbit。
+    const targetId = requireTargetId(operation.targetId);
+    const entity = this.requireEntity(targetId);
+
+    const previousTracked = this.adapter.getTrackedEntity();
+    const previousOrbitSnapshot = this.snapshotOrbitForRestore();
+
+    // focus 必须退出 track/orbit，避免与 flyTo 竞争。
+    this.stopOrbit();
+    this.adapter.setTrackedEntity(undefined);
+
     const hasOffset =
       operation.distanceMeters != null ||
       operation.headingDegrees != null ||
       operation.pitchDegrees != null;
 
-    if (!hasOffset) {
-      await this.adapter.flyTo(entity);
+    try {
+      if (!hasOffset) {
+        await this.adapter.flyTo(entity);
+      } else {
+        await this.adapter.flyTo(entity, {
+          offset: {
+            heading: degreesToRadians(operation.headingDegrees ?? 0),
+            pitch: degreesToRadians(
+              operation.pitchDegrees ?? DEFAULT_ORBIT_PITCH_DEGREES,
+            ),
+            range: operation.distanceMeters ?? DEFAULT_ORBIT_RANGE_METERS,
+          },
+        });
+      }
+    } catch (error) {
+      this.restoreTrackOrOrbit(previousTracked, previousOrbitSnapshot);
+      throw error;
+    }
+    // 成功后旧模式保持清除。
+  }
+
+  private snapshotOrbitForRestore(): OrbitState | undefined {
+    if (!this.orbit) {
+      return undefined;
+    }
+    return {
+      targetId: this.orbit.targetId,
+      headingRadians: this.orbit.headingRadians,
+      pitchRadians: this.orbit.pitchRadians,
+      rangeMeters: this.orbit.rangeMeters,
+      angularSpeedRadiansPerSecond: this.orbit.angularSpeedRadiansPerSecond,
+      lastTickTime: this.adapter.cloneTime(this.orbit.lastTickTime),
+      unsubscribe: () => undefined,
+    };
+  }
+
+  private restoreTrackOrOrbit(
+    previousTracked: CameraEntityAdapter | undefined,
+    previousOrbit: OrbitState | undefined,
+  ): void {
+    if (previousOrbit) {
+      this.restoreOrbit(previousOrbit);
+      return;
+    }
+    if (previousTracked) {
+      this.adapter.setTrackedEntity(previousTracked);
+    }
+  }
+
+  private restoreOrbit(snapshot: OrbitState): void {
+    this.stopOrbit();
+    this.adapter.setTrackedEntity(undefined);
+
+    try {
+      this.lookAtEntity(snapshot.targetId, {
+        headingRadians: snapshot.headingRadians,
+        pitchRadians: snapshot.pitchRadians,
+        rangeMeters: snapshot.rangeMeters,
+      });
+    } catch {
       return;
     }
 
-    await this.adapter.flyTo(entity, {
-      offset: {
-        heading: degreesToRadians(operation.headingDegrees ?? 0),
-        pitch: degreesToRadians(
-          operation.pitchDegrees ?? DEFAULT_ORBIT_PITCH_DEGREES,
-        ),
-        range: operation.distanceMeters ?? DEFAULT_ORBIT_RANGE_METERS,
-      },
-    });
+    const state: OrbitState = {
+      ...snapshot,
+      lastTickTime: this.adapter.cloneTime(this.adapter.getCurrentTime()),
+      unsubscribe: () => undefined,
+    };
+
+    const onTick = (clock: { currentTime: unknown }) => {
+      if (!this.orbit || this.orbit !== state) {
+        return;
+      }
+
+      const dt = this.adapter.secondsDifference(
+        clock.currentTime,
+        state.lastTickTime,
+      );
+      state.lastTickTime = this.adapter.cloneTime(clock.currentTime);
+      if (Number.isFinite(dt) && dt > 0) {
+        state.headingRadians += state.angularSpeedRadiansPerSecond * dt;
+      }
+
+      try {
+        this.lookAtEntity(state.targetId, {
+          headingRadians: state.headingRadians,
+          pitchRadians: state.pitchRadians,
+          rangeMeters: state.rangeMeters,
+        });
+      } catch {
+        this.stopOrbit();
+      }
+    };
+
+    state.unsubscribe = this.adapter.addTickListener(onTick);
+    this.orbit = state;
   }
 
   private track(operation: CameraSceneOp): void {
