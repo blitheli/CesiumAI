@@ -1,6 +1,14 @@
 @CesiumAI.Api_HostAddress = http://localhost:5088
 
-GET {{CesiumAI.Api_HostAddress}}/weatherforecast/
+POST {{CesiumAI.Api_HostAddress}}/api/chat
 Accept: application/json
+Content-Type: application/json
 
-###
+{
+  "message": "清空当前场景",
+  "sessionId": null,
+  "sceneSummary": {
+    "entities": []
+  },
+  "relevantPackets": []
+}

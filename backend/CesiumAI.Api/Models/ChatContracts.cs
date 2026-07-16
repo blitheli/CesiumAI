@@ -19,10 +19,10 @@ public enum EntityType
 
 public sealed record ChatRequest(
     [property: JsonPropertyName("message")]
-    [property: Required, MinLength(1)] string Message,
+    [param: Required, MinLength(1)] string Message,
     [property: JsonPropertyName("sessionId")] string? SessionId,
     [property: JsonPropertyName("sceneSummary")]
-    [property: Required] SceneSummary SceneSummary,
+    [param: Required] SceneSummary SceneSummary,
     [property: JsonPropertyName("relevantPackets")]
     IReadOnlyList<JsonElement>? RelevantPackets);
 
