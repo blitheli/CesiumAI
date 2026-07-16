@@ -815,3 +815,119 @@ it("keeps initialization uncommitted after attachment failure and allows retry",
   expect(viewer.dataSources.add).toHaveBeenCalledTimes(2);
   expect(manager.pickRelevantPackets(["document"])).toEqual(createEmpty());
 });
+
+it("applies style via complete packet process while preserving dynamic position", async () => {
+  const port = createPort();
+  const manager = new CesiumSceneManager(createEmpty, port);
+  await manager.initialize();
+  const position = {
+    epoch: "2026-07-16T00:00:00Z",
+    cartesian: [0, 1, 2, 3, 4, 5, 6],
+  };
+  await manager.applySceneOps([
+    {
+      op: "upsert",
+      packets: [
+        {
+          id: "iss",
+          availability: "2026-07-16T00:00:00Z/2026-07-17T00:00:00Z",
+          position,
+          properties: { orbitHint: "sgp4" },
+          path: { width: 2, show: true },
+        },
+      ],
+    },
+  ]);
+  vi.mocked(port.removeById).mockClear();
+  vi.mocked(port.process).mockClear();
+
+  await manager.applySceneOps([
+    { op: "style", id: "iss", patch: { path: { width: 5 } } },
+  ]);
+
+  expect(port.removeById).toHaveBeenCalledOnce();
+  expect(port.removeById).toHaveBeenCalledWith("iss");
+  expect(port.process).toHaveBeenCalledOnce();
+  expect(port.process).toHaveBeenCalledWith([
+    {
+      id: "iss",
+      availability: "2026-07-16T00:00:00Z/2026-07-17T00:00:00Z",
+      position,
+      properties: { orbitHint: "sgp4" },
+      path: { width: 5, show: true },
+    },
+  ]);
+  expect(manager.pickRelevantPackets(["iss"])).toEqual([
+    {
+      id: "iss",
+      availability: "2026-07-16T00:00:00Z/2026-07-17T00:00:00Z",
+      position,
+      properties: { orbitHint: "sgp4" },
+      path: { width: 5, show: true },
+    },
+  ]);
+});
+
+it("rolls back Cesium and leaves document unchanged when style processing fails", async () => {
+  const failure = new Error("style rejected");
+  const port = createPort({
+    process: vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(failure),
+  });
+  const manager = new CesiumSceneManager(createEmpty, port);
+  await manager.initialize();
+  const priorPacket = {
+    id: "iss",
+    position: { cartesian: [1, 2, 3] },
+    path: { width: 2 },
+  };
+  await manager.applySceneOps([{ op: "upsert", packets: [priorPacket] }]);
+
+  await expect(
+    manager.applySceneOps([
+      { op: "style", id: "iss", patch: { path: { width: 5 } } },
+    ]),
+  ).rejects.toBe(failure);
+
+  expect(port.load).toHaveBeenCalledTimes(2);
+  expect(port.load).toHaveBeenLastCalledWith([...createEmpty(), priorPacket]);
+  expect(port.restoreViewerClock).toHaveBeenCalledOnce();
+  expect(manager.pickRelevantPackets(["iss"])).toEqual([priorPacket]);
+});
+
+it("rejects style for missing entities before touching Cesium", async () => {
+  const port = createPort();
+  const manager = new CesiumSceneManager(createEmpty, port);
+  await manager.initialize();
+
+  await expect(
+    manager.applySceneOps([
+      { op: "style", id: "missing", patch: { path: { width: 5 } } },
+    ]),
+  ).rejects.toThrow();
+
+  expect(port.removeById).not.toHaveBeenCalled();
+  expect(port.process).not.toHaveBeenCalled();
+});
+
+it("throws unsupported for camera ops and stops the operation queue", async () => {
+  const port = createPort();
+  const manager = new CesiumSceneManager(createEmpty, port);
+  await manager.initialize();
+
+  await expect(
+    manager.applySceneOps([
+      { op: "upsert", packets: [{ id: "iss", path: { width: 2 } }] },
+      { op: "camera", action: "track", targetId: "iss" },
+      { op: "style", id: "iss", patch: { path: { width: 5 } } },
+    ]),
+  ).rejects.toThrow(/unsupported|未支持|相机/i);
+
+  expect(manager.pickRelevantPackets(["iss"])).toEqual([
+    { id: "iss", path: { width: 2 } },
+  ]);
+  expect(port.process).toHaveBeenCalledTimes(1);
+  expect(port.process).toHaveBeenCalledWith([{ id: "iss", path: { width: 2 } }]);
+});

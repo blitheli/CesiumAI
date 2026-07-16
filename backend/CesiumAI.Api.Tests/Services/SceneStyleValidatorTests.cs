@@ -65,6 +65,7 @@ public class SceneStyleValidatorTests
     [InlineData("[255.5,0,0,255]")]
     [InlineData("[0.0000001,0,0,255]")]
     [InlineData("[1.1,2,3,4]")]
+    [InlineData("[1e400,0,0,255]")]
     public void ValidateAndClone_RejectsInvalidRgbaArrays(string rgbaJson)
     {
         using JsonDocument document = JsonDocument.Parse($$"""{ "point": { "color": { "rgba": {{rgbaJson}} } } }""");
@@ -72,6 +73,33 @@ public class SceneStyleValidatorTests
         Action act = () => _validator.ValidateAndClone(document.RootElement);
 
         act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void JsonElement_TryGetInt32_RejectsExactIntegerWrittenAsJsonFraction()
+    {
+        // 证据：System.Text.Json 对 JSON `1.0` 的 TryGetInt32 返回 false，
+        // 而前端 Number.isInteger(JSON.parse('1.0')) 为 true。不能再用 TryGetInt32 作为“精确整数”语义。
+        using JsonDocument document = JsonDocument.Parse("""{"v":1.0}""");
+        JsonElement value = document.RootElement.GetProperty("v");
+
+        value.TryGetInt32(out _).Should().BeFalse();
+        value.TryGetDouble(out double number).Should().BeTrue();
+        number.Should().Be(1.0);
+        double.IsInteger(number).Should().BeTrue();
+    }
+
+    [Fact]
+    public void ValidateAndClone_AcceptsRgbaExactIntegersWrittenAsJsonFractions()
+    {
+        using JsonDocument document = JsonDocument.Parse("""
+            { "point": { "color": { "rgba": [1.0, 2.0, 3.0, 255.0] } } }
+            """);
+
+        JsonElement clone = _validator.ValidateAndClone(document.RootElement);
+
+        clone.GetProperty("point").GetProperty("color").GetProperty("rgba")
+            .EnumerateArray().Select(value => value.GetDouble()).Should().Equal([1.0, 2.0, 3.0, 255.0]);
     }
 
     [Theory]

@@ -367,6 +367,44 @@ export class CesiumSceneManager {
             );
           }
           break;
+        case "style": {
+          const previousDocument = cloneDocument(this.sceneDocument);
+          const nextDocument = reduceSceneDocument(
+            this.sceneDocument,
+            [operation],
+            this.emptyDocument,
+          );
+          const completePacket = nextDocument.find(
+            (packet) => packet.id === operation.id,
+          );
+          if (!completePacket) {
+            throw new Error(`样式目标实体不存在：'${operation.id}'。`);
+          }
+
+          const viewerClockSnapshot = port.snapshotViewerClock();
+          try {
+            port.removeById(operation.id);
+            await port.process(cloneDocument([completePacket]));
+          } catch (error) {
+            try {
+              await port.load(cloneDocument(previousDocument));
+              port.restoreViewerClock(viewerClockSnapshot);
+            } catch (rollbackError) {
+              throw new AggregateError(
+                [error, rollbackError],
+                "CZML style 失败且无法恢复先前的 Cesium document",
+              );
+            }
+            throw error;
+          }
+
+          this.sceneDocument = nextDocument;
+          break;
+        }
+        case "camera":
+          throw new Error(
+            "相机 SceneOp 尚未支持（unsupported）：请等待相机控制器接入后再执行。",
+          );
       }
     }
   }

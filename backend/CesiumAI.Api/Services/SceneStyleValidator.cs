@@ -13,7 +13,13 @@ public interface ISceneStyleValidator
 
 public sealed class SceneStyleValidator : ISceneStyleValidator
 {
-    private const int MaxUtf8Bytes = 32 * 1024;
+    /// <summary>
+    /// 额外的传输加固：拒绝超大 raw UTF-8 请求体。
+    /// 这不是前后端共享的语义预算；所有被接受的 patch 仍必须通过
+    /// <see cref="SemanticJsonSize.MaxSemanticBytes"/> 语义大小校验。
+    /// </summary>
+    private const int MaxRawUtf8Bytes = 32 * 1024;
+
     private const int MaxDepth = 12;
     private const int MaxArrayLength = 4096;
 
@@ -45,9 +51,22 @@ public sealed class SceneStyleValidator : ISceneStyleValidator
         }
 
         byte[] utf8 = Encoding.UTF8.GetBytes(patch.GetRawText());
-        if (utf8.Length > MaxUtf8Bytes)
+
+        // 共享语义预算优先；与前端 measureSemanticJsonSize 对齐。
+        int semanticBytes = SemanticJsonSize.Measure(patch);
+        if (semanticBytes > SemanticJsonSize.MaxSemanticBytes)
         {
-            throw new ArgumentException($"样式 patch 不能超过 {MaxUtf8Bytes} 字节。", nameof(patch));
+            throw new ArgumentException(
+                $"样式 patch 语义大小不能超过 {SemanticJsonSize.MaxSemanticBytes} 字节。",
+                nameof(patch));
+        }
+
+        // 额外传输加固（非语义预算）：限制原始 JSON 文本大小（如含大量空白的请求）。
+        if (utf8.Length > MaxRawUtf8Bytes)
+        {
+            throw new ArgumentException(
+                $"样式 patch 原始 UTF-8 不能超过 {MaxRawUtf8Bytes} 字节（传输加固）。",
+                nameof(patch));
         }
 
         ValidateNode(patch, depth: 1, isTopLevel: true);
@@ -146,9 +165,12 @@ public sealed class SceneStyleValidator : ISceneStyleValidator
                 throw new ArgumentException("rgba 必须是长度为 4 的数组。");
             }
 
-            // 要求 JSON 精确整数；拒绝任何小数（含极小正数）。
+            // 与前端 Number.isInteger 对齐：接受 JSON `1.0` 这类精确整数写法，
+            // 拒绝 1.5 / 非有限数（含 1e400→∞）。不用 TryGetInt32（其对 1.0 返回 false）。
             if (component.ValueKind != JsonValueKind.Number
-                || !component.TryGetInt32(out int value)
+                || !component.TryGetDouble(out double value)
+                || !double.IsFinite(value)
+                || !double.IsInteger(value)
                 || value < 0
                 || value > 255)
             {
