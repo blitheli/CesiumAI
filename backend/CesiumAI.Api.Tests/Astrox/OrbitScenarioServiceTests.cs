@@ -64,7 +64,8 @@ public class OrbitScenarioServiceTests
         var client = CreateAstroxClient(handler);
         var service = new OrbitScenarioService(client);
 
-        JsonElement? packet = await service.CreateSsoJ2PacketAsync(CreateScenario(), CancellationToken.None);
+        Task<JsonElement> createPacketTask = service.CreateSsoJ2PacketAsync(CreateScenario(), CancellationToken.None);
+        JsonElement packet = await createPacketTask;
 
         requestedPaths.Should().Equal("/OrbitWizard/SSO", "/Propagator/J2");
         capturedJ2Body.Should().NotBeNull();
@@ -76,8 +77,7 @@ public class OrbitScenarioServiceTests
             .Should()
             .Equal([7278136.3, 0.001, 98.9, 0.2, 15.4, 22.8]);
 
-        packet.Should().NotBeNull();
-        JsonElement root = packet!.Value;
+        JsonElement root = packet;
 
         root.EnumerateObject().Select(property => property.Name).Should().BeEquivalentTo(
             ["id", "name", "availability", "position", "point", "path", "properties"]);
@@ -112,7 +112,7 @@ public class OrbitScenarioServiceTests
     }
 
     [Fact]
-    public async Task CreateSsoJ2PacketAsync_ReturnsNullWithoutCallingJ2_WhenSsoFails()
+    public async Task CreateSsoJ2PacketAsync_ThrowsAstroxExceptionWithoutReturningPacket_WhenSsoFails()
     {
         var requestedPaths = new List<string>();
         var handler = new StubHttpMessageHandler((request, _) =>
@@ -137,15 +137,18 @@ public class OrbitScenarioServiceTests
         });
 
         var service = new OrbitScenarioService(CreateAstroxClient(handler));
+        JsonElement? packet = null;
 
-        JsonElement? packet = await service.CreateSsoJ2PacketAsync(CreateScenario(), CancellationToken.None);
+        Func<Task> act = async () => packet = await service.CreateSsoJ2PacketAsync(CreateScenario(), CancellationToken.None);
 
-        packet.Should().BeNull();
+        await act.Should().ThrowAsync<AstroxException>()
+            .WithMessage("*OrbitWizard/SSO*no solution*");
+        packet.HasValue.Should().BeFalse();
         requestedPaths.Should().Equal("/OrbitWizard/SSO");
     }
 
     [Fact]
-    public async Task CreateSsoJ2PacketAsync_ReturnsNull_WhenJ2Fails()
+    public async Task CreateSsoJ2PacketAsync_ThrowsAstroxExceptionWithoutReturningPacket_WhenJ2Fails()
     {
         var requestedPaths = new List<string>();
         var handler = new StubHttpMessageHandler((request, _) =>
@@ -182,10 +185,13 @@ public class OrbitScenarioServiceTests
         });
 
         var service = new OrbitScenarioService(CreateAstroxClient(handler));
+        JsonElement? packet = null;
 
-        JsonElement? packet = await service.CreateSsoJ2PacketAsync(CreateScenario(), CancellationToken.None);
+        Func<Task> act = async () => packet = await service.CreateSsoJ2PacketAsync(CreateScenario(), CancellationToken.None);
 
-        packet.Should().BeNull();
+        await act.Should().ThrowAsync<AstroxException>()
+            .WithMessage("*Propagator/J2*propagation failed*");
+        packet.HasValue.Should().BeFalse();
         requestedPaths.Should().Equal("/OrbitWizard/SSO", "/Propagator/J2");
     }
 

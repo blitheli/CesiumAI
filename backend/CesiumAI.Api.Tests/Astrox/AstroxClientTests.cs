@@ -180,6 +180,53 @@ public class AstroxClientTests
             .WithMessage("*Propagator/J2*orbit rejected*");
     }
 
+    [Fact]
+    public async Task CreateSsoAsync_ThrowsAstroxException_WhenResponseBodyIsWhitespace()
+    {
+        var handler = new StubHttpMessageHandler((_, _) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("   ")
+            }));
+        var client = CreateClient(handler);
+
+        Func<Task> act = async () => await client.CreateSsoAsync(
+            new SsoRequest(
+                Description: "SSO-900",
+                OrbitEpoch: DateTimeOffset.Parse("2026-07-16T00:00:00.000Z"),
+                Altitude: 900,
+                LocalTimeOfDescendingNode: 10.5),
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<AstroxException>()
+            .WithMessage("*OrbitWizard/SSO*empty response body*");
+    }
+
+    [Fact]
+    public async Task PropagateJ2Async_ThrowsAstroxException_WhenResponseBodyIsEmpty()
+    {
+        var handler = new StubHttpMessageHandler((_, _) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(string.Empty)
+            }));
+        var client = CreateClient(handler);
+
+        Func<Task> act = async () => await client.PropagateJ2Async(
+            new J2Request(
+                Start: DateTimeOffset.Parse("2026-07-16T00:00:00.000Z"),
+                Stop: DateTimeOffset.Parse("2026-07-17T00:00:00.000Z"),
+                CentralBody: "Earth",
+                OrbitEpoch: DateTimeOffset.Parse("2026-07-16T00:00:00.000Z"),
+                CoordType: "Classical",
+                OrbitalElements: [7278136.3, 0.001, 98.9, 0, 0, 0],
+                Step: 60),
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<AstroxException>()
+            .WithMessage("*Propagator/J2*empty response body*");
+    }
+
     private static AstroxClient CreateClient(HttpMessageHandler handler)
     {
         var httpClient = new HttpClient(handler)

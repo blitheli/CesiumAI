@@ -13,7 +13,7 @@ public interface IAstroxClient
 
 public interface IOrbitScenarioService
 {
-    Task<JsonElement?> CreateSsoJ2PacketAsync(SsoJ2Scenario scenario, CancellationToken cancellationToken);
+    Task<JsonElement> CreateSsoJ2PacketAsync(SsoJ2Scenario scenario, CancellationToken cancellationToken);
 }
 
 public sealed record SsoRequest(

@@ -56,7 +56,14 @@ public sealed class AstroxClient : IAstroxClient
 
         try
         {
-            TResponse? body = await response.Content.ReadFromJsonAsync<TResponse>(ResponseJsonOptions, cancellationToken);
+            string responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+
+            if (string.IsNullOrWhiteSpace(responseBody))
+            {
+                throw new AstroxException($"Astrox call to {endpoint} returned an empty response body.");
+            }
+
+            TResponse? body = JsonSerializer.Deserialize<TResponse>(responseBody, ResponseJsonOptions);
 
             if (body is null)
             {
@@ -102,7 +109,14 @@ public sealed class AstroxClient : IAstroxClient
     {
         try
         {
-            AstroxErrorBody? error = await response.Content.ReadFromJsonAsync<AstroxErrorBody>(ResponseJsonOptions, cancellationToken);
+            string responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+
+            if (string.IsNullOrWhiteSpace(responseBody))
+            {
+                return null;
+            }
+
+            AstroxErrorBody? error = JsonSerializer.Deserialize<AstroxErrorBody>(responseBody, ResponseJsonOptions);
             return string.IsNullOrWhiteSpace(error?.Message) ? null : error.Message;
         }
         catch (JsonException)
