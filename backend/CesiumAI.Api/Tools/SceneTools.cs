@@ -310,6 +310,103 @@ public sealed class SceneTools(
         return "Camera orbit stop queued.";
     }
 
+    [Description("Propagate an orbit via an Astrox /Propagator/* endpoint and queue a satellite packet upsert. Large positions stay server-side and are not returned to the model.")]
+    public async Task<string> PropagateAndAddSatellite(
+        string id,
+        string? name,
+        string propagatorPath,
+        string requestJson,
+        string startUtc,
+        string stopUtc,
+        string? orbitHint = null,
+        CancellationToken cancellationToken = default)
+    {
+        string satelliteId = ValidateEntityId(id, nameof(id));
+        string satelliteName = string.IsNullOrWhiteSpace(name) ? satelliteId : name.Trim();
+        DateTimeOffset start = ParseRequiredUtc(startUtc, nameof(startUtc));
+        DateTimeOffset stop = ParseRequiredUtc(stopUtc, nameof(stopUtc));
+        ValidateAvailabilityWindow(start, stop);
+
+        if (string.IsNullOrWhiteSpace(propagatorPath))
+        {
+            throw new ArgumentException("Propagator path cannot be blank.", nameof(propagatorPath));
+        }
+
+        if (string.IsNullOrWhiteSpace(requestJson))
+        {
+            throw new ArgumentException("Request JSON cannot be blank.", nameof(requestJson));
+        }
+
+        JsonElement request;
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(requestJson);
+            request = document.RootElement.Clone();
+        }
+        catch (JsonException ex)
+        {
+            throw new ArgumentException("Request JSON is invalid.", nameof(requestJson), ex);
+        }
+
+        JsonElement packet = await _orbitScenarioService.CreatePacketFromPropagationAsync(
+            satelliteId,
+            satelliteName,
+            propagatorPath.Trim(),
+            request,
+            start,
+            stop,
+            orbitHint,
+            cancellationToken);
+
+        _sceneOpSink.Add(new UpsertSceneOp([packet.Clone()]));
+        // 不向模型回传大型 Position，仅返回简短确认。
+        return $"Satellite '{satelliteId}' queued for upsert.";
+    }
+
+    [Description("Queue a satellite packet upsert from a validated CZML position JSON. Large positions are not echoed back to the model.")]
+    public string AddSatelliteFromPositions(
+        string id,
+        string? name,
+        string positionJson,
+        string startUtc,
+        string stopUtc,
+        string? orbitHint = null)
+    {
+        string satelliteId = ValidateEntityId(id, nameof(id));
+        string satelliteName = string.IsNullOrWhiteSpace(name) ? satelliteId : name.Trim();
+        DateTimeOffset start = ParseRequiredUtc(startUtc, nameof(startUtc));
+        DateTimeOffset stop = ParseRequiredUtc(stopUtc, nameof(stopUtc));
+        ValidateAvailabilityWindow(start, stop);
+
+        if (string.IsNullOrWhiteSpace(positionJson))
+        {
+            throw new ArgumentException("Position JSON cannot be blank.", nameof(positionJson));
+        }
+
+        JsonElement position;
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(positionJson);
+            position = document.RootElement.Clone();
+        }
+        catch (JsonException ex)
+        {
+            throw new ArgumentException("Position JSON is invalid.", nameof(positionJson), ex);
+        }
+
+        JsonElement packet = _orbitScenarioService.CreatePacketFromPositions(
+            satelliteId,
+            satelliteName,
+            position,
+            start,
+            stop,
+            orbitHint);
+
+        _sceneOpSink.Add(new UpsertSceneOp([packet.Clone()]));
+        // 不向模型回传大型 Position，仅返回简短确认。
+        return $"Satellite '{satelliteId}' queued for upsert.";
+    }
+
     [Description("Update allowed visual style properties of an existing entity via a JSON patch.")]
     public string UpdateEntityStyle(string id, string patchJson)
     {
@@ -431,6 +528,38 @@ public sealed class SceneTools(
         }
 
         return parsed;
+    }
+
+    private static DateTimeOffset ParseRequiredUtc(string value, string parameterName)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            throw new ArgumentException("UTC timestamp cannot be blank.", parameterName);
+        }
+
+        if (!DateTimeOffset.TryParse(
+                value,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out DateTimeOffset parsed))
+        {
+            throw new ArgumentException("UTC timestamp must be valid.", parameterName);
+        }
+
+        return parsed;
+    }
+
+    private static void ValidateAvailabilityWindow(DateTimeOffset startUtc, DateTimeOffset stopUtc)
+    {
+        if (stopUtc <= startUtc)
+        {
+            throw new ArgumentException("Availability stop 必须晚于 start。");
+        }
+
+        if (stopUtc - startUtc > TimeSpan.FromHours(24))
+        {
+            throw new ArgumentException("Availability 窗口不能超过 24 小时。");
+        }
     }
 
     private static DateTimeOffset TruncateToMinute(DateTimeOffset value)

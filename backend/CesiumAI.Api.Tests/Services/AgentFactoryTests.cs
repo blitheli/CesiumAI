@@ -126,6 +126,26 @@ public class AgentFactoryTests
             SsoJ2Scenario scenario,
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException("Agent creation must not call Astrox.");
+
+        public Task<JsonElement> CreatePacketFromPropagationAsync(
+            string id,
+            string name,
+            string propagatorPath,
+            JsonElement request,
+            DateTimeOffset startUtc,
+            DateTimeOffset stopUtc,
+            string? orbitHint,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Agent creation must not call Astrox.");
+
+        public JsonElement CreatePacketFromPositions(
+            string id,
+            string name,
+            JsonElement position,
+            DateTimeOffset startUtc,
+            DateTimeOffset stopUtc,
+            string? orbitHint) =>
+            throw new InvalidOperationException("Agent creation must not call Astrox.");
     }
 
     private sealed class StubHostEnvironment(string contentRoot) : IHostEnvironment

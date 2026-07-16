@@ -9,12 +9,41 @@ public interface IAstroxClient
     Task<SsoResponse> CreateSsoAsync(SsoRequest request, CancellationToken cancellationToken);
 
     Task<J2Response> PropagateJ2Async(J2Request request, CancellationToken cancellationToken);
+
+    Task<GenericPropagationResponse> PropagateAsync(
+        string endpoint,
+        JsonElement request,
+        CancellationToken cancellationToken);
 }
 
 public interface IOrbitScenarioService
 {
     Task<JsonElement> CreateSsoJ2PacketAsync(SsoJ2Scenario scenario, CancellationToken cancellationToken);
+
+    Task<JsonElement> CreatePacketFromPropagationAsync(
+        string id,
+        string name,
+        string propagatorPath,
+        JsonElement request,
+        DateTimeOffset startUtc,
+        DateTimeOffset stopUtc,
+        string? orbitHint,
+        CancellationToken cancellationToken);
+
+    JsonElement CreatePacketFromPositions(
+        string id,
+        string name,
+        JsonElement position,
+        DateTimeOffset startUtc,
+        DateTimeOffset stopUtc,
+        string? orbitHint);
 }
+
+public sealed record GenericPropagationResponse(
+    bool IsSuccess,
+    string Message,
+    JsonElement Position,
+    double? Period) : IAstroxSuccessResponse;
 
 public sealed record SsoRequest(
     string Description,

@@ -1,5 +1,6 @@
-using System.Net.Http.Json;
 using System.Globalization;
+using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using CesiumAI.Api.Configuration;
 using Microsoft.Extensions.Options;
@@ -8,6 +9,27 @@ namespace CesiumAI.Api.Astrox;
 
 public sealed class AstroxClient : IAstroxClient
 {
+    /// <summary>
+    /// 通用 PropagateAsync 响应体上限：2 MiB Position + 64 KiB envelope。
+    /// </summary>
+    public const int MaxGenericResponseBytes = (2 * 1024 * 1024) + (64 * 1024);
+
+    /// <summary>
+    /// 旧 SSO/J2 typed 路径响应体安全上限，足以容纳既有 24h/1s 步长合法输出。
+    /// </summary>
+    public const int MaxTypedResponseBytes = 64 * 1024 * 1024;
+
+    private const string PropagatorPrefix = "/Propagator/";
+
+    private static readonly string[] CanonicalRootKeys =
+    [
+        "IsSuccess",
+        "Message",
+        "Position",
+        "Period",
+        "Elements_Inertial"
+    ];
+
     private static readonly JsonSerializerOptions RequestJsonOptions = CreateRequestOptions();
     private static readonly JsonSerializerOptions ResponseJsonOptions = CreateResponseOptions();
 
@@ -29,20 +51,89 @@ public sealed class AstroxClient : IAstroxClient
     public Task<J2Response> PropagateJ2Async(J2Request request, CancellationToken cancellationToken)
         => PostAsync<J2Request, J2Response>("/Propagator/J2", request, cancellationToken);
 
-    private async Task<TResponse> PostAsync<TRequest, TResponse>(string endpoint, TRequest request, CancellationToken cancellationToken)
+    public async Task<GenericPropagationResponse> PropagateAsync(
+        string endpoint,
+        JsonElement request,
+        CancellationToken cancellationToken)
+    {
+        string normalizedEndpoint = NormalizePropagatorEndpoint(endpoint);
+        GenericPropagationResponse response = await PostContentAsync<GenericPropagationResponse>(
+            normalizedEndpoint,
+            JsonContent.Create(request),
+            MaxGenericResponseBytes,
+            cancellationToken);
+
+        // 返回独立于 HTTP 响应缓冲的 Position，避免响应释放后不可读。
+        return response with { Position = response.Position.Clone() };
+    }
+
+    private Task<TResponse> PostAsync<TRequest, TResponse>(
+        string endpoint,
+        TRequest request,
+        CancellationToken cancellationToken)
+        where TResponse : class, IAstroxSuccessResponse
+        => SendAndReadAsync<TResponse>(
+            endpoint,
+            new HttpRequestMessage(HttpMethod.Post, endpoint)
+            {
+                Content = JsonContent.Create(request, options: RequestJsonOptions)
+            },
+            MaxTypedResponseBytes,
+            cancellationToken);
+
+    private Task<TResponse> PostContentAsync<TResponse>(
+        string endpoint,
+        HttpContent content,
+        int maxResponseBytes,
+        CancellationToken cancellationToken)
+        where TResponse : class, IAstroxSuccessResponse
+        => SendAndReadAsync<TResponse>(
+            endpoint,
+            new HttpRequestMessage(HttpMethod.Post, endpoint)
+            {
+                Content = content
+            },
+            maxResponseBytes,
+            cancellationToken);
+
+    private async Task<TResponse> SendAndReadAsync<TResponse>(
+        string endpoint,
+        HttpRequestMessage requestMessage,
+        int maxResponseBytes,
+        CancellationToken cancellationToken)
         where TResponse : class, IAstroxSuccessResponse
     {
-        HttpResponseMessage response;
-
-        try
+        using (requestMessage)
         {
-            response = await _httpClient.PostAsJsonAsync(endpoint, request, RequestJsonOptions, cancellationToken);
-        }
-        catch (HttpRequestException ex)
-        {
-            throw new AstroxException($"Astrox call to {endpoint} failed: {ex.Message}", ex);
-        }
+            HttpResponseMessage response;
 
+            try
+            {
+                response = await _httpClient.SendAsync(
+                    requestMessage,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken);
+            }
+            catch (HttpRequestException ex)
+            {
+                throw new AstroxException($"Astrox call to {endpoint} failed: {ex.Message}", ex);
+            }
+
+            return await ReadSuccessResponseAsync<TResponse>(
+                endpoint,
+                response,
+                maxResponseBytes,
+                cancellationToken);
+        }
+    }
+
+    private async Task<TResponse> ReadSuccessResponseAsync<TResponse>(
+        string endpoint,
+        HttpResponseMessage response,
+        int maxResponseBytes,
+        CancellationToken cancellationToken)
+        where TResponse : class, IAstroxSuccessResponse
+    {
         using (response)
         {
             try
@@ -51,7 +142,10 @@ public sealed class AstroxClient : IAstroxClient
             }
             catch (HttpRequestException ex)
             {
-                string serverMessage = await TryReadServerMessageAsync(response, cancellationToken)
+                string serverMessage = await TryReadServerMessageAsync(
+                        response,
+                        maxResponseBytes,
+                        cancellationToken)
                     ?? ex.Message;
 
                 throw new AstroxException($"Astrox call to {endpoint} failed: {serverMessage}", ex);
@@ -59,7 +153,11 @@ public sealed class AstroxClient : IAstroxClient
 
             try
             {
-                string responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                string responseBody = await ReadBoundedBodyAsync(
+                    endpoint,
+                    response,
+                    maxResponseBytes,
+                    cancellationToken);
 
                 if (string.IsNullOrWhiteSpace(responseBody))
                 {
@@ -68,6 +166,11 @@ public sealed class AstroxClient : IAstroxClient
 
                 using JsonDocument responseDocument = JsonDocument.Parse(responseBody);
                 JsonElement root = responseDocument.RootElement;
+                if (root.ValueKind == JsonValueKind.Object)
+                {
+                    ValidateCanonicalRootObject(root, endpoint);
+                }
+
                 if (IsSuccessfulPayload(root))
                 {
                     ValidateSuccessfulPayload<TResponse>(root, endpoint);
@@ -94,10 +197,155 @@ public sealed class AstroxClient : IAstroxClient
         }
     }
 
+    private static async Task<string> ReadBoundedBodyAsync(
+        string endpoint,
+        HttpResponseMessage response,
+        int maxResponseBytes,
+        CancellationToken cancellationToken)
+    {
+        HttpContent content = response.Content;
+        long? contentLength = content.Headers.ContentLength;
+        if (contentLength is long length && length > maxResponseBytes)
+        {
+            throw new AstroxException(
+                $"Astrox call to {endpoint} returned a response that is too large (Content-Length {contentLength}).");
+        }
+
+        await using Stream stream = await content.ReadAsStreamAsync(cancellationToken);
+        using var buffer = new MemoryStream(
+            capacity: (int)Math.Min(contentLength ?? 8192, maxResponseBytes));
+        byte[] chunk = new byte[8192];
+        int total = 0;
+
+        while (true)
+        {
+            int read = await stream.ReadAsync(chunk.AsMemory(0, chunk.Length), cancellationToken);
+            if (read == 0)
+            {
+                break;
+            }
+
+            total += read;
+            if (total > maxResponseBytes)
+            {
+                throw new AstroxException(
+                    $"Astrox call to {endpoint} returned a response that is too large.");
+            }
+
+            buffer.Write(chunk, 0, read);
+        }
+
+        return Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
+    }
+
+    /// <summary>
+    /// 将 endpoint 规范化为仅允许的 /Propagator/* 相对路径，并阻断穿越与编码绕过。
+    /// </summary>
+    internal static string NormalizePropagatorEndpoint(string endpoint)
+    {
+        if (string.IsNullOrWhiteSpace(endpoint))
+        {
+            throw new ArgumentException("Propagator endpoint cannot be blank.", nameof(endpoint));
+        }
+
+        string trimmed = endpoint.Trim();
+
+        // 绝对 URL（含 scheme）与 protocol-relative authority。
+        if (trimmed.Contains("://", StringComparison.Ordinal)
+            || trimmed.StartsWith("//", StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                "Propagator endpoint cannot be an absolute URL or contain an authority.",
+                nameof(endpoint));
+        }
+
+        if (trimmed[0] != '/'
+            || trimmed.Contains('\\')
+            || trimmed.Contains('?', StringComparison.Ordinal)
+            || trimmed.Contains('#', StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                "Propagator endpoint must be a root-relative /Propagator/* path without authority, query, or fragment.",
+                nameof(endpoint));
+        }
+
+        ValidateDecodedPropagatorPath(trimmed, nameof(endpoint));
+
+        if (!trimmed.StartsWith(PropagatorPrefix, StringComparison.Ordinal)
+            || trimmed.Length <= PropagatorPrefix.Length)
+        {
+            throw new ArgumentException(
+                "Propagator endpoint must start with /Propagator/ and name a propagator.",
+                nameof(endpoint));
+        }
+
+        return trimmed;
+    }
+
+    private static void ValidateDecodedPropagatorPath(string path, string parameterName)
+    {
+        const int maximumDecodeRounds = 4;
+        string current = path;
+
+        for (int round = 0; round <= maximumDecodeRounds; round++)
+        {
+            if (current.Contains('\\', StringComparison.Ordinal)
+                || current.StartsWith("//", StringComparison.Ordinal)
+                || current.Contains('?', StringComparison.Ordinal)
+                || current.Contains('#', StringComparison.Ordinal)
+                || current.Split(['/', '\\']).Any(segment => segment is "." or ".."))
+            {
+                throw new ArgumentException(
+                    "Propagator endpoint cannot contain backslashes, query/fragment, or dot segments.",
+                    parameterName);
+            }
+
+            string decoded;
+            try
+            {
+                decoded = Uri.UnescapeDataString(current);
+            }
+            catch (UriFormatException ex)
+            {
+                throw new ArgumentException("Propagator endpoint contains invalid escaping.", parameterName, ex);
+            }
+
+            if (string.Equals(decoded, current, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            current = decoded;
+        }
+
+        throw new ArgumentException(
+            "Propagator endpoint exceeds the supported URL-decoding depth.",
+            parameterName);
+    }
+
     private static bool IsSuccessfulPayload(JsonElement root)
         => root.ValueKind == JsonValueKind.Object
-            && TryGetProperty(root, "IsSuccess", out JsonElement isSuccess)
+            && TryGetPropertyExact(root, "IsSuccess", out JsonElement isSuccess)
             && isSuccess.ValueKind is JsonValueKind.True;
+
+    private static void ValidateCanonicalRootObject(JsonElement root, string endpoint)
+    {
+        EnsureNoCaseInsensitiveDuplicateNames(root, endpoint, "root");
+
+        foreach (JsonProperty property in root.EnumerateObject())
+        {
+            foreach (string canonical in CanonicalRootKeys)
+            {
+                if (string.Equals(property.Name, canonical, StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(property.Name, canonical, StringComparison.Ordinal))
+                {
+                    ThrowInvalidPayload(
+                        endpoint,
+                        $"Root key '{property.Name}' must use canonical casing '{canonical}'.");
+                }
+            }
+        }
+    }
 
     private static void ValidateSuccessfulPayload<TResponse>(
         JsonElement root,
@@ -110,7 +358,8 @@ public sealed class AstroxClient : IAstroxClient
             return;
         }
 
-        if (typeof(TResponse) == typeof(J2Response))
+        if (typeof(TResponse) == typeof(J2Response)
+            || typeof(TResponse) == typeof(GenericPropagationResponse))
         {
             ValidateJ2Position(root, endpoint);
         }
@@ -118,11 +367,13 @@ public sealed class AstroxClient : IAstroxClient
 
     private static void ValidateSsoElements(JsonElement root, string endpoint)
     {
-        if (!TryGetProperty(root, "Elements_Inertial", out JsonElement elements)
+        if (!TryGetPropertyExact(root, "Elements_Inertial", out JsonElement elements)
             || elements.ValueKind != JsonValueKind.Object)
         {
             ThrowInvalidPayload(endpoint, "Elements_Inertial must be an object.");
         }
+
+        EnsureNoCaseInsensitiveDuplicateNames(elements, endpoint, "Elements_Inertial");
 
         string[] requiredProperties =
         [
@@ -136,7 +387,7 @@ public sealed class AstroxClient : IAstroxClient
         ];
         foreach (string propertyName in requiredProperties)
         {
-            if (!TryGetProperty(elements, propertyName, out JsonElement value)
+            if (!TryGetPropertyExact(elements, propertyName, out JsonElement value)
                 || !IsFiniteNumber(value))
             {
                 ThrowInvalidPayload(
@@ -148,13 +399,15 @@ public sealed class AstroxClient : IAstroxClient
 
     private static void ValidateJ2Position(JsonElement root, string endpoint)
     {
-        if (!TryGetProperty(root, "Position", out JsonElement position)
+        if (!TryGetPropertyExact(root, "Position", out JsonElement position)
             || position.ValueKind != JsonValueKind.Object)
         {
             ThrowInvalidPayload(endpoint, "Position must be an object.");
         }
 
-        if (!TryGetProperty(position, "epoch", out JsonElement epoch)
+        EnsureNoCaseInsensitiveDuplicateNames(position, endpoint, "Position");
+
+        if (!TryGetPropertyExact(position, "epoch", out JsonElement epoch)
             || epoch.ValueKind != JsonValueKind.String
             || string.IsNullOrWhiteSpace(epoch.GetString())
             || !DateTimeOffset.TryParse(
@@ -166,11 +419,11 @@ public sealed class AstroxClient : IAstroxClient
             ThrowInvalidPayload(endpoint, "Position.epoch must be a valid timestamp.");
         }
 
-        bool hasCartesian = TryGetProperty(
+        bool hasCartesian = TryGetPropertyExact(
             position,
             "cartesian",
             out JsonElement cartesian);
-        bool hasCartesianVelocity = TryGetProperty(
+        bool hasCartesianVelocity = TryGetPropertyExact(
             position,
             "cartesianVelocity",
             out JsonElement cartesianVelocity);
@@ -218,17 +471,31 @@ public sealed class AstroxClient : IAstroxClient
             && value.TryGetDouble(out double number)
             && double.IsFinite(number);
 
-    private static bool TryGetProperty(
+    private static void EnsureNoCaseInsensitiveDuplicateNames(
+        JsonElement obj,
+        string endpoint,
+        string context)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (JsonProperty property in obj.EnumerateObject())
+        {
+            if (!seen.Add(property.Name))
+            {
+                ThrowInvalidPayload(
+                    endpoint,
+                    $"{context} cannot contain duplicate keys (including case variants): '{property.Name}'.");
+            }
+        }
+    }
+
+    private static bool TryGetPropertyExact(
         JsonElement element,
         string propertyName,
         out JsonElement value)
     {
         foreach (JsonProperty property in element.EnumerateObject())
         {
-            if (string.Equals(
-                property.Name,
-                propertyName,
-                StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(property.Name, propertyName, StringComparison.Ordinal))
             {
                 value = property.Value;
                 return true;
@@ -256,20 +523,28 @@ public sealed class AstroxClient : IAstroxClient
 
     private static JsonSerializerOptions CreateResponseOptions()
     {
+        // 大小写敏感，避免“验证首个、消费最后一个”的大小写变体绕过。
         var options = new JsonSerializerOptions
         {
-            PropertyNameCaseInsensitive = true
+            PropertyNameCaseInsensitive = false
         };
 
         options.Converters.Add(new UtcMillisecondDateTimeOffsetConverter());
         return options;
     }
 
-    private static async Task<string?> TryReadServerMessageAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    private static async Task<string?> TryReadServerMessageAsync(
+        HttpResponseMessage response,
+        int maxResponseBytes,
+        CancellationToken cancellationToken)
     {
         try
         {
-            string responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+            string responseBody = await ReadBoundedBodyAsync(
+                "error",
+                response,
+                maxResponseBytes,
+                cancellationToken);
 
             if (string.IsNullOrWhiteSpace(responseBody))
             {
@@ -278,6 +553,10 @@ public sealed class AstroxClient : IAstroxClient
 
             AstroxErrorBody? error = JsonSerializer.Deserialize<AstroxErrorBody>(responseBody, ResponseJsonOptions);
             return string.IsNullOrWhiteSpace(error?.Message) ? null : error.Message;
+        }
+        catch (AstroxException)
+        {
+            return null;
         }
         catch (JsonException)
         {

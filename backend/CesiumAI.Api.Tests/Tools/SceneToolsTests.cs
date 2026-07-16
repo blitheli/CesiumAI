@@ -666,6 +666,189 @@ public class SceneToolsTests
         validator.Calls.Should().ContainSingle();
     }
 
+    [Fact]
+    public async Task PropagateAndAddSatellite_QueuesSingleUpsert_WithoutReturningLargePositions()
+    {
+        JsonElement expectedPacket = CreateSatellitePacket("sat-gen", "Generic Sat", "SGP4 hint");
+        var orbitService = new StubOrbitScenarioService(
+            createFromPropagation: (_, _, _, _, _, _, _, _) => Task.FromResult(expectedPacket));
+        var collector = new SceneOpCollector();
+        var tools = new SceneTools(collector, orbitService);
+
+        string result = await tools.PropagateAndAddSatellite(
+            id: "sat-gen",
+            name: "Generic Sat",
+            propagatorPath: "/Propagator/SGP4",
+            requestJson: """{"Step":60}""",
+            startUtc: "2026-07-16T00:00:00Z",
+            stopUtc: "2026-07-16T01:00:00Z",
+            orbitHint: "SGP4 hint");
+
+        result.Should().Contain("sat-gen");
+        result.Should().NotContain("cartesian");
+        result.Should().NotContain("1e6");
+        orbitService.PropagationCalls.Should().ContainSingle();
+        PropagationCall call = orbitService.PropagationCalls.Single();
+        call.Id.Should().Be("sat-gen");
+        call.Name.Should().Be("Generic Sat");
+        call.PropagatorPath.Should().Be("/Propagator/SGP4");
+        call.Request.GetProperty("Step").GetInt32().Should().Be(60);
+        call.StartUtc.Should().Be(DateTimeOffset.Parse("2026-07-16T00:00:00Z"));
+        call.StopUtc.Should().Be(DateTimeOffset.Parse("2026-07-16T01:00:00Z"));
+        call.OrbitHint.Should().Be("SGP4 hint");
+
+        UpsertSceneOp operation = collector.Drain().Should().ContainSingle().Which.Should().BeOfType<UpsertSceneOp>().Subject;
+        operation.Packets.Should().ContainSingle();
+        operation.Packets.Single().GetRawText().Should().Be(expectedPacket.GetRawText());
+    }
+
+    [Fact]
+    public async Task PropagateAndAddSatellite_DoesNotQueueOperations_WhenOrbitServiceFails()
+    {
+        var orbitService = new StubOrbitScenarioService(
+            createFromPropagation: (_, _, _, _, _, _, _, _) =>
+                throw new AstroxException("propagation unavailable"));
+        var collector = new SceneOpCollector();
+        var tools = new SceneTools(collector, orbitService);
+
+        Func<Task> act = async () => await tools.PropagateAndAddSatellite(
+            id: "sat-gen",
+            name: null,
+            propagatorPath: "/Propagator/TwoBody",
+            requestJson: """{"Step":60}""",
+            startUtc: "2026-07-16T00:00:00Z",
+            stopUtc: "2026-07-16T01:00:00Z");
+
+        await act.Should().ThrowAsync<AstroxException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(" ")]
+    [InlineData("document")]
+    public async Task PropagateAndAddSatellite_RejectsBlankOrDocumentId_WithoutQueuingOperations(string id)
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Func<Task> act = async () => await tools.PropagateAndAddSatellite(
+            id: id,
+            name: null,
+            propagatorPath: "/Propagator/TwoBody",
+            requestJson: """{"Step":60}""",
+            startUtc: "2026-07-16T00:00:00Z",
+            stopUtc: "2026-07-16T01:00:00Z");
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task PropagateAndAddSatellite_RejectsInvalidRequestJsonOrWindow_WithoutQueuingOperations()
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Func<Task> invalidJson = async () => await tools.PropagateAndAddSatellite(
+            "sat-1",
+            null,
+            "/Propagator/TwoBody",
+            "{ not-json",
+            "2026-07-16T00:00:00Z",
+            "2026-07-16T01:00:00Z");
+        Func<Task> invalidWindow = async () => await tools.PropagateAndAddSatellite(
+            "sat-1",
+            null,
+            "/Propagator/TwoBody",
+            """{"Step":60}""",
+            "2026-07-16T00:00:00Z",
+            "2026-07-17T00:00:01Z");
+
+        await invalidJson.Should().ThrowAsync<ArgumentException>();
+        await invalidWindow.Should().ThrowAsync<ArgumentException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AddSatelliteFromPositions_QueuesSingleUpsert_WithoutEchoingLargePositions()
+    {
+        JsonElement expectedPacket = CreateSatellitePacket("sat-pos", "sat-pos", "external");
+        var orbitService = new StubOrbitScenarioService(
+            createFromPositions: (_, _, _, _, _, _) => expectedPacket);
+        var collector = new SceneOpCollector();
+        var tools = new SceneTools(collector, orbitService);
+        string largePositionJson = """
+            {
+              "epoch": "2026-07-16T00:00:00.000Z",
+              "cartesian": [0, 1000000, 2000000, 3000000, 60, 4000000, 5000000, 6000000]
+            }
+            """;
+
+        string result = tools.AddSatelliteFromPositions(
+            id: "sat-pos",
+            name: null,
+            positionJson: largePositionJson,
+            startUtc: "2026-07-16T00:00:00Z",
+            stopUtc: "2026-07-16T01:00:00Z",
+            orbitHint: "external");
+
+        result.Should().Contain("sat-pos");
+        result.Should().NotContain("1000000");
+        result.Should().NotContain("cartesian");
+        orbitService.PositionCalls.Should().ContainSingle();
+        UpsertSceneOp operation = collector.Drain().Should().ContainSingle().Which.Should().BeOfType<UpsertSceneOp>().Subject;
+        operation.Packets.Single().GetRawText().Should().Be(expectedPacket.GetRawText());
+    }
+
+    [Fact]
+    public void AddSatelliteFromPositions_DoesNotQueueOperations_WhenValidationFails()
+    {
+        var orbitService = new StubOrbitScenarioService(
+            createFromPositions: (_, _, _, _, _, _) =>
+                throw new ArgumentException("invalid position"));
+        var collector = new SceneOpCollector();
+        var tools = new SceneTools(collector, orbitService);
+
+        Action act = () => tools.AddSatelliteFromPositions(
+            id: "sat-pos",
+            name: null,
+            positionJson: """{"epoch":"2026-07-16T00:00:00.000Z","cartesian":[0,1,2,3]}""",
+            startUtc: "2026-07-16T00:00:00Z",
+            stopUtc: "2026-07-16T01:00:00Z");
+
+        act.Should().Throw<ArgumentException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
+    private static JsonElement CreateSatellitePacket(string id, string name, string orbitHint)
+        => JsonSerializer.SerializeToElement(new
+        {
+            id,
+            name,
+            availability = "2026-07-16T00:00:00.000Z/2026-07-16T01:00:00.000Z",
+            position = new
+            {
+                epoch = "2026-07-16T00:00:00.000Z",
+                cartesian = new[] { 0, 1, 2, 3 }
+            },
+            point = new
+            {
+                pixelSize = 8,
+                color = new { rgba = new[] { 255, 220, 0, 255 } }
+            },
+            path = new
+            {
+                show = true,
+                width = 2,
+                leadTime = 0,
+                trailTime = 3600
+            },
+            properties = new
+            {
+                orbitHint = new { @string = orbitHint }
+            }
+        });
+
     private static SceneTools CreateTools(
         ISceneOpSink sink,
         ISceneStyleValidator? styleValidator = null)
@@ -686,18 +869,96 @@ public class SceneToolsTests
         }
     }
 
+    private sealed record PropagationCall(
+        string Id,
+        string Name,
+        string PropagatorPath,
+        JsonElement Request,
+        DateTimeOffset StartUtc,
+        DateTimeOffset StopUtc,
+        string? OrbitHint);
+
+    private sealed record PositionCall(
+        string Id,
+        string Name,
+        JsonElement Position,
+        DateTimeOffset StartUtc,
+        DateTimeOffset StopUtc,
+        string? OrbitHint);
+
     private sealed class StubOrbitScenarioService(
-        Func<SsoJ2Scenario, CancellationToken, Task<JsonElement>>? createPacket = null) : IOrbitScenarioService
+        Func<SsoJ2Scenario, CancellationToken, Task<JsonElement>>? createPacket = null,
+        Func<string, string, string, JsonElement, DateTimeOffset, DateTimeOffset, string?, CancellationToken, Task<JsonElement>>? createFromPropagation = null,
+        Func<string, string, JsonElement, DateTimeOffset, DateTimeOffset, string?, JsonElement>? createFromPositions = null) : IOrbitScenarioService
     {
         private readonly Func<SsoJ2Scenario, CancellationToken, Task<JsonElement>> _createPacket =
             createPacket ?? ((_, _) => Task.FromResult(JsonSerializer.SerializeToElement(new { id = "default-sat" })));
 
+        private readonly Func<string, string, string, JsonElement, DateTimeOffset, DateTimeOffset, string?, CancellationToken, Task<JsonElement>> _createFromPropagation =
+            createFromPropagation
+            ?? ((_, _, _, _, _, _, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new { id = "default-sat" })));
+
+        private readonly Func<string, string, JsonElement, DateTimeOffset, DateTimeOffset, string?, JsonElement> _createFromPositions =
+            createFromPositions
+            ?? ((_, _, _, _, _, _) => JsonSerializer.SerializeToElement(new { id = "default-sat" }));
+
         public List<SsoJ2Scenario> Scenarios { get; } = [];
+
+        public List<PropagationCall> PropagationCalls { get; } = [];
+
+        public List<PositionCall> PositionCalls { get; } = [];
 
         public Task<JsonElement> CreateSsoJ2PacketAsync(SsoJ2Scenario scenario, CancellationToken cancellationToken)
         {
             Scenarios.Add(scenario);
             return _createPacket(scenario, cancellationToken);
+        }
+
+        public Task<JsonElement> CreatePacketFromPropagationAsync(
+            string id,
+            string name,
+            string propagatorPath,
+            JsonElement request,
+            DateTimeOffset startUtc,
+            DateTimeOffset stopUtc,
+            string? orbitHint,
+            CancellationToken cancellationToken)
+        {
+            PropagationCalls.Add(new PropagationCall(
+                id,
+                name,
+                propagatorPath,
+                request.Clone(),
+                startUtc,
+                stopUtc,
+                orbitHint));
+            return _createFromPropagation(
+                id,
+                name,
+                propagatorPath,
+                request,
+                startUtc,
+                stopUtc,
+                orbitHint,
+                cancellationToken);
+        }
+
+        public JsonElement CreatePacketFromPositions(
+            string id,
+            string name,
+            JsonElement position,
+            DateTimeOffset startUtc,
+            DateTimeOffset stopUtc,
+            string? orbitHint)
+        {
+            PositionCalls.Add(new PositionCall(
+                id,
+                name,
+                position.Clone(),
+                startUtc,
+                stopUtc,
+                orbitHint));
+            return _createFromPositions(id, name, position, startUtc, stopUtc, orbitHint);
         }
     }
 
