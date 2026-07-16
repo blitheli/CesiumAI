@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import { viteStaticCopy } from "vite-plugin-static-copy";
 
@@ -9,6 +9,7 @@ export default defineConfig({
       targets: ["Assets", "ThirdParty", "Widgets", "Workers"].map((name) => ({
         src: `node_modules/cesium/Build/Cesium/${name}`,
         dest: "cesium",
+        rename: { stripBase: 4 },
       })),
     }),
   ],
@@ -20,5 +21,6 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     css: true,
+    exclude: [...configDefaults.exclude, "e2e/**"],
   },
 });
