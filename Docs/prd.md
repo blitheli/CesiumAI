@@ -1,6 +1,6 @@
 # CesiumAI — 产品需求 / 技术规格（MVP）
 
-> 状态：已评审定稿（对话决策 A / A2 / B1 / C2 / D2 / E1 / 方案1 / F3）  
+> 状态：已评审定稿（对话决策 A / A2 / B1 / C2 / D2 / E1 / 方案1 / F1）  
 > 日期：2026-07-16  
 > 关联：`Docs/需求初步描述.md`、`https://gitee.com/blitheli/astrox-skills.git`
 
@@ -48,7 +48,7 @@
 | E1 | 同步 `POST /api/chat` |
 | Arch-1 | 薄 ASP.NET API + 每轮 SceneOp 收集器 |
 | Skills | 源仓库 `https://gitee.com/blitheli/astrox-skills.git` |
-| F3 | MVP：手动 clone/复制到 `backend/skills`，由 `AgentSkillsProvider` 加载 |
+| F1 | Skills：`backend/astrox-skills` Git submodule；加载 `skills/` |
 
 ---
 
@@ -68,7 +68,7 @@
 │  ASP.NET Core                                                │
 │  ChatController → ChatService                                │
 │       ├─ AIAgent (Microsoft Agent Framework)                 │
-│       ├─ AgentSkillsProvider (backend/skills)                │
+│       ├─ AgentSkillsProvider (backend/astrox-skills/skills)   │
 │       ├─ HttpGet/HttpPost → Astrox WebAPI                    │
 │       └─ 场景 Tools → ISceneOpCollector → sceneOps           │
 └─────────────────────────────────────────────────────────────┘
@@ -101,7 +101,7 @@ CesiumAI/
     │   ├── Tools/             # ClearScene, UpsertFacility, AddSatelliteJ2...
     │   ├── Models/
     │   └── Program.cs
-    └── skills/                # 来自 astrox-skills（F3：手动放置）
+    └── astrox-skills/           # Git submodule（F1）
 ```
 
 ### 4.4 职责边界
@@ -341,7 +341,7 @@ OpenAIClient(Kimi/Moonshot endpoint)
 
 - **源仓库**：`https://gitee.com/blitheli/astrox-skills.git`
 - **内容**：航天动力学算法 SKILLS；`skills/<skill-name>/SKILL.md` + `fixtures/`；公共协议在 `skills/shared-docs/`（含 CZML position 等 schema）；`astrox-web-api.json` 可作为 API 参考
-- **MVP 接入（F3）**：开发/部署时将该仓库（或其 `skills/` 目录）放置到 `backend/skills`，由 `AgentSkillsProvider` 加载；**不**把整仓强制打进主仓历史
+- **接入（F1）**：以 Git submodule 置于 `backend/astrox-skills`；`AgentSkillsProvider` 加载其 `skills/` 目录（默认 `Skills:Path=../astrox-skills/skills`）
 - **职责划分**：Skill + 泛型 HTTP 用于计算/查询；**写场景**只走强类型场景 Tools
 
 ### 7.5 Session 存储
@@ -378,7 +378,6 @@ OpenAIClient(Kimi/Moonshot endpoint)
 - SSE / WebSocket 流式
 - 登录鉴权、场景落库、撤销栈
 - Access / 光照等更多分析 Skills 的产品化封装（可随后加 Tool）
-- Git submodule 管理 skills（F1，后续可选）
 
 ---
 
@@ -411,7 +410,7 @@ OpenAIClient(Kimi/Moonshot endpoint)
 2. **场景持久化**：`sceneDocument` 存 localStorage / 后端按 projectId
 3. **更多 Tools**：可见性、地面站网、星座批量生成
 4. **sceneOps 校验器**：JSON Schema 校验 packet 再返回前端
-5. **Skills 引用升级**：F3 → F1（git submodule）
+5. **sceneOps 校验器**：JSON Schema 校验 packet 再返回前端
 6. **选中实体 → 自动进 relevantPackets**（增强 A2）
 
 ---

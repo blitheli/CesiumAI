@@ -21,17 +21,23 @@ npx playwright install chromium
 cd ..
 ```
 
-### 安装 astrox-skills（F3）
+### 安装 astrox-skills（Git submodule）
 
-MVP 采用 PRD 决策 F3：手动将 astrox-skills 的 `skills/` 内容复制到 `backend/skills/`，由 `AgentSkillsProvider` 从该目录加载。它不是 git submodule，也不会被提交到本仓库。
+`astrox-skills` 以 Git submodule 形式位于 `backend/astrox-skills`。Agent 从 `backend/astrox-skills/skills` 加载。
+
+新 clone：
 
 ```bash
-git clone https://gitee.com/blitheli/astrox-skills.git /tmp/astrox-skills
-mkdir -p backend/skills
-cp -R /tmp/astrox-skills/skills/. backend/skills/
+git clone --recurse-submodules <repo-url>
 ```
 
-`backend/skills/` 已在 `.gitignore` 中。不要强制添加该目录。
+已有 clone：
+
+```bash
+git submodule update --init --recursive
+```
+
+若本地仍残留手动复制的 `backend/skills/`，可删除；默认配置不再使用该路径。
 
 ## 配置
 
@@ -44,16 +50,16 @@ dotnet user-secrets init --project backend/CesiumAI.Api
 dotnet user-secrets set "Agent:ApiKey" "<your-key>" --project backend/CesiumAI.Api
 ```
 
-仓库默认配置使用 `https://api.moonshot.cn/v1`、`kimi-k2.6`、`http://astrox.cn:8765` 和 `backend/skills`。如需覆盖，可继续使用 User Secrets：
+仓库默认配置使用 `https://api.moonshot.cn/v1`、`kimi-k2.6`、`http://astrox.cn:8765` 和 `backend/astrox-skills/skills`。如需覆盖，可继续使用 User Secrets：
 
 ```bash
 dotnet user-secrets set "Agent:Endpoint" "<openai-compatible-base-url>" --project backend/CesiumAI.Api
 dotnet user-secrets set "Agent:Model" "<model-name>" --project backend/CesiumAI.Api
 dotnet user-secrets set "Astrox:BaseUrl" "<astrox-base-url>" --project backend/CesiumAI.Api
-dotnet user-secrets set "Skills:Path" "../skills" --project backend/CesiumAI.Api
+dotnet user-secrets set "Skills:Path" "../astrox-skills/skills" --project backend/CesiumAI.Api
 ```
 
-`Skills:Path` 必须是相对于 API content root（`backend/CesiumAI.Api`）的相对路径；默认 `../skills` 指向 `backend/skills`。
+`Skills:Path` 必须是相对于 API content root（`backend/CesiumAI.Api`）的相对路径；默认 `../astrox-skills/skills` 指向 `backend/astrox-skills/skills`。
 
 ### 环境变量替代方案
 
@@ -75,7 +81,7 @@ export Agent__ApiKey="<your-key>"
 export Agent__Endpoint="https://api.moonshot.cn/v1"
 export Agent__Model="kimi-k2.6"
 export Astrox__BaseUrl="http://astrox.cn:8765"
-export Skills__Path="../skills"
+export Skills__Path="../astrox-skills/skills"
 export VITE_API_BASE_URL="http://localhost:5088"
 ```
 
@@ -151,7 +157,7 @@ export ReverseProxy__KnownProxies__0="10.0.0.12"
 
 ```bash
 mkdir -p publish/skills
-cp -R /tmp/astrox-skills/skills/. publish/skills/
+cp -R backend/astrox-skills/skills/. publish/skills/
 cd publish/api
 export Agent__ApiKey="<your-key>"
 export Skills__Path="../skills"
@@ -212,8 +218,7 @@ cd frontend && npx playwright install chromium
 
 以下内容已被忽略，不应纳入 Git：
 
-- `backend/skills/`
 - `appsettings.Development.json`
 - 前端依赖、构建和 Playwright 输出
 
-提交前可运行 `git status --short`，确认没有 key、User Secrets 导出文件或 astrox-skills 内容。
+`backend/astrox-skills` 为 Git submodule，其内容版本由 submodule commit 管理。提交前可运行 `git status --short`，确认没有 key、User Secrets 导出文件或误提交的密钥。

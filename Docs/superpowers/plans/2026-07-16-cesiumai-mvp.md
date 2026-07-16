@@ -1,5 +1,7 @@
 # CesiumAI MVP Implementation Plan
 
+> **Note (2026-07-16):** Skills 接入已从 F3 升级为 F1 submodule。见 `Docs/superpowers/specs/2026-07-16-astrox-skills-submodule-design.md` 与 `Docs/superpowers/plans/2026-07-16-astrox-skills-submodule.md`。下文中 `backend/skills` 手动复制步骤已过时。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a React/Cesium product page where natural-language commands call an ASP.NET Core Microsoft Agent Framework backend and apply typed CZML scene operations for clearing scenes, editing facilities, and visualizing a one-day 900 km SSO/J2 satellite trajectory.
