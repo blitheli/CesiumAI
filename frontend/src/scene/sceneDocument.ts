@@ -8,6 +8,12 @@ function cloneDocument(document: CzmlPacket[]): CzmlPacket[] {
   return document.map(clonePacket);
 }
 
+function assertValidUpsertId(id: unknown): asserts id is string {
+  if (typeof id !== "string" || id.trim() === "") {
+    throw new Error("Upsert packet id must be a non-empty string");
+  }
+}
+
 export function reduceSceneDocument(
   current: CzmlPacket[],
   operations: SceneOp[],
@@ -22,6 +28,7 @@ export function reduceSceneDocument(
         break;
       case "upsert":
         for (const packet of operation.packets) {
+          assertValidUpsertId(packet.id);
           if (packet.id === "document") {
             continue;
           }

@@ -1,3 +1,4 @@
+import type { CzmlPacket } from "../contracts/chat";
 import { createEmptyDocument } from "./emptyDocument";
 import { reduceSceneDocument } from "./sceneDocument";
 
@@ -77,6 +78,55 @@ it("ignores delete of document id", () => {
     empty,
   );
 
+  expect(result).toHaveLength(1);
+  expect(result[0]?.id).toBe("document");
+});
+
+it("throws on upsert packets with missing or blank id", () => {
+  const empty = createEmptyDocument(new Date("2026-07-16T00:00:00Z"));
+
+  expect(() =>
+    reduceSceneDocument(
+      empty,
+      [{ op: "upsert", packets: [{} as unknown as CzmlPacket] }],
+      empty,
+    ),
+  ).toThrow("Upsert packet id must be a non-empty string");
+
+  expect(() =>
+    reduceSceneDocument(
+      empty,
+      [{ op: "upsert", packets: [{ id: "" } as unknown as CzmlPacket] }],
+      empty,
+    ),
+  ).toThrow("Upsert packet id must be a non-empty string");
+
+  expect(() =>
+    reduceSceneDocument(
+      empty,
+      [{ op: "upsert", packets: [{ id: "   " } as unknown as CzmlPacket] }],
+      empty,
+    ),
+  ).toThrow("Upsert packet id must be a non-empty string");
+});
+
+it("executes upsert, clear, upsert, and delete in array order", () => {
+  const empty = createEmptyDocument(new Date("2026-07-16T00:00:00Z"));
+  const current = [...empty, { id: "before-clear", point: {} }];
+  const result = reduceSceneDocument(
+    current,
+    [
+      { op: "upsert", packets: [{ id: "staged", name: "cleared away", point: {} }] },
+      { op: "clear" },
+      { op: "upsert", packets: [{ id: "after-clear", name: "then removed", point: {} }] },
+      { op: "delete", ids: ["after-clear"] },
+    ],
+    empty,
+  );
+
+  expect(result.some((packet) => packet.id === "before-clear")).toBe(false);
+  expect(result.some((packet) => packet.id === "staged")).toBe(false);
+  expect(result.some((packet) => packet.id === "after-clear")).toBe(false);
   expect(result).toHaveLength(1);
   expect(result[0]?.id).toBe("document");
 });
