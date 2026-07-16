@@ -42,6 +42,7 @@ function createManager(
   return {
     initialize: vi.fn(async () => undefined),
     setSelectedEntityIds: vi.fn(),
+    destroy: vi.fn(),
     buildSummary: vi.fn(() => summary),
     getSelectedEntityIds: vi.fn(() => ["sanya"]),
     pickRelevantPackets: vi.fn((ids: string[]) =>

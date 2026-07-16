@@ -392,6 +392,21 @@ public class SceneToolsTests
         collector.Drain().Should().BeEmpty();
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0.0)]
+    [InlineData(-1.0)]
+    public void AdjustCamera_Pan_RejectsNonPositiveAmount_WithoutQueuingOperations(double? amount)
+    {
+        var collector = new SceneOpCollector();
+        var tools = CreateTools(collector);
+
+        Action act = () => tools.AdjustCamera(action: "pan", direction: "left", amount: amount);
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
+        collector.Drain().Should().BeEmpty();
+    }
+
     [Fact]
     public void AdjustCamera_Rotate_QueuesSingleRotateOperation()
     {

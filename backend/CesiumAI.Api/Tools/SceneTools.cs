@@ -219,6 +219,14 @@ public sealed class SceneTools(
 
             case CameraAction.Pan:
                 validatedDirection = ValidatePanDirection(direction);
+                if (amount is null || amount <= 0)
+                {
+                    throw new ArgumentOutOfRangeException(
+                        nameof(amount),
+                        amount,
+                        "Pan amount must be a positive finite distance in meters.");
+                }
+
                 break;
 
             case CameraAction.Rotate:

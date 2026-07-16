@@ -912,22 +912,108 @@ it("rejects style for missing entities before touching Cesium", async () => {
   expect(port.process).not.toHaveBeenCalled();
 });
 
-it("throws unsupported for camera ops and stops the operation queue", async () => {
+it("按序 await 相机控制器，失败时停止后续操作", async () => {
   const port = createPort();
-  const manager = new CesiumSceneManager(createEmpty, port);
+  const cameraController = {
+    apply: vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("相机目标无效")),
+    onSceneCleared: vi.fn(),
+    onEntitiesDeleted: vi.fn(),
+    destroy: vi.fn(),
+  };
+  const manager = new CesiumSceneManager(
+    createEmpty,
+    port,
+    cameraController,
+  );
+  await manager.initialize();
+
+  await manager.applySceneOps([
+    { op: "upsert", packets: [{ id: "iss", path: { width: 2 } }] },
+    { op: "camera", action: "track", targetId: "iss" },
+  ]);
+  expect(cameraController.apply).toHaveBeenCalledWith({
+    op: "camera",
+    action: "track",
+    targetId: "iss",
+  });
+
+  await expect(
+    manager.applySceneOps([
+      { op: "camera", action: "focus", targetId: "missing" },
+      { op: "style", id: "iss", patch: { path: { width: 5 } } },
+    ]),
+  ).rejects.toThrow(/相机目标无效/);
+
+  expect(cameraController.apply).toHaveBeenCalledTimes(2);
+  expect(port.process).toHaveBeenCalledTimes(1);
+  expect(port.process).toHaveBeenCalledWith([{ id: "iss", path: { width: 2 } }]);
+  expect(manager.pickRelevantPackets(["iss"])).toEqual([
+    { id: "iss", path: { width: 2 } },
+  ]);
+});
+
+it("相机 flyTo 失败时 SceneManager 停止后续操作", async () => {
+  const port = createPort();
+  const cameraController = {
+    apply: vi.fn(async (operation: { action: string }) => {
+      if (operation.action === "focus") {
+        throw new Error("相机 flyTo 未能完成。");
+      }
+    }),
+    onSceneCleared: vi.fn(),
+    onEntitiesDeleted: vi.fn(),
+    destroy: vi.fn(),
+  };
+  const manager = new CesiumSceneManager(
+    createEmpty,
+    port,
+    cameraController,
+  );
   await manager.initialize();
 
   await expect(
     manager.applySceneOps([
-      { op: "upsert", packets: [{ id: "iss", path: { width: 2 } }] },
-      { op: "camera", action: "track", targetId: "iss" },
+      { op: "upsert", packets: [{ id: "iss", name: "ISS" }] },
+      { op: "camera", action: "focus", targetId: "iss" },
       { op: "style", id: "iss", patch: { path: { width: 5 } } },
     ]),
-  ).rejects.toThrow(/unsupported|未支持|相机/i);
+  ).rejects.toThrow(/flyTo|未能完成/);
 
-  expect(manager.pickRelevantPackets(["iss"])).toEqual([
-    { id: "iss", path: { width: 2 } },
-  ]);
+  expect(cameraController.apply).toHaveBeenCalledTimes(1);
   expect(port.process).toHaveBeenCalledTimes(1);
-  expect(port.process).toHaveBeenCalledWith([{ id: "iss", path: { width: 2 } }]);
+  expect(port.process).toHaveBeenCalledWith([{ id: "iss", name: "ISS" }]);
+  expect(manager.pickRelevantPackets(["iss"])).toEqual([
+    { id: "iss", name: "ISS" },
+  ]);
+});
+
+it("clear/delete/destroy 时通知相机控制器清理", async () => {
+  const port = createPort();
+  const cameraController = {
+    apply: vi.fn(async () => undefined),
+    onSceneCleared: vi.fn(),
+    onEntitiesDeleted: vi.fn(),
+    destroy: vi.fn(),
+  };
+  const manager = new CesiumSceneManager(
+    createEmpty,
+    port,
+    cameraController,
+  );
+  await manager.initialize();
+
+  await manager.applySceneOps([
+    { op: "upsert", packets: [{ id: "iss", name: "ISS" }] },
+    { op: "delete", ids: ["iss"] },
+  ]);
+  expect(cameraController.onEntitiesDeleted).toHaveBeenCalledWith(["iss"]);
+
+  await manager.applySceneOps([{ op: "clear" }]);
+  expect(cameraController.onSceneCleared).toHaveBeenCalledOnce();
+
+  manager.destroy();
+  expect(cameraController.destroy).toHaveBeenCalledOnce();
 });

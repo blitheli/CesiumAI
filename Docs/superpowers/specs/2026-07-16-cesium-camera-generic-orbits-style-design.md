@@ -54,7 +54,7 @@
 | `zoom` | 相对当前视角拉近或拉远 |
 | `pan` | 按屏幕方向或距离平移 |
 | `rotate` | 相对调整航向、俯仰和翻滚 |
-| `orbitStep` | 围绕实体单次旋转指定角度 |
+| `orbitStep` | 围绕实体单次旋转：`targetHeading = (headingDegrees ?? 当前相对目标 heading) + amount`；未传 `headingDegrees` 时相对当前视角增量，传入时以该值为显式基准；`pitchDegrees`/`distanceMeters` 可选覆盖 |
 | `orbitStart` | 按角速度持续环绕实体 |
 | `orbitStop` | 停止持续环绕 |
 

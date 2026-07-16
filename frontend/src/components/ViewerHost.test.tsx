@@ -1,10 +1,7 @@
 import { act, render, waitFor } from "@testing-library/react";
 import type { Viewer } from "cesium";
 import { vi } from "vitest";
-import {
-  ViewerHost,
-  type ViewerSceneManager,
-} from "./ViewerHost";
+import { ViewerHost } from "./ViewerHost";
 
 const cesiumFakes = vi.hoisted(() => {
   type SelectionListener = (entity?: { id?: string }) => void;
@@ -67,10 +64,11 @@ vi.mock("cesium", () => ({
   buildModuleUrl: cesiumFakes.buildModuleUrl,
 }));
 
-function createManager(): ViewerSceneManager {
+function createManager() {
   return {
     initialize: vi.fn(async (_viewer: Viewer) => undefined),
     setSelectedEntityIds: vi.fn(),
+    destroy: vi.fn(),
   };
 }
 
@@ -137,5 +135,9 @@ it("writes selection to the manager and cleans up the listener and Viewer", () =
   unmount();
 
   expect(cesiumFakes.removeSelectionListener).toHaveBeenCalledOnce();
+  expect(manager.destroy).toHaveBeenCalledOnce();
   expect(viewer.destroy).toHaveBeenCalledOnce();
+  expect(manager.destroy.mock.invocationCallOrder[0]).toBeLessThan(
+    viewer.destroy.mock.invocationCallOrder[0]!,
+  );
 });

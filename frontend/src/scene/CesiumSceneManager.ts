@@ -15,6 +15,10 @@ import {
   buildSceneSummary,
   pickRelevantPackets as selectRelevantPackets,
 } from "./summary";
+import {
+  createCesiumCameraController,
+  type CameraControllerPort,
+} from "./CesiumCameraController";
 
 export interface CzmlDataSourcePort {
   load(packets: CzmlPacket[]): Promise<unknown>;
@@ -141,6 +145,10 @@ class CesiumCzmlDataSourcePort implements CzmlDataSourcePort {
     this.dataSource = new CzmlDataSource("scene");
   }
 
+  getEntityById(id: string) {
+    return this.dataSource.entities.getById(id);
+  }
+
   async load(packets: CzmlPacket[]): Promise<unknown> {
     const result = await this.dataSource.load(packets);
     if (!this.attached) {
@@ -240,6 +248,7 @@ class CesiumCzmlDataSourcePort implements CzmlDataSourcePort {
 export class CesiumSceneManager {
   private readonly emptyDocument: CzmlPacket[];
   private dataSourcePort: CzmlDataSourcePort | undefined;
+  private cameraController: CameraControllerPort | undefined;
   private sceneDocument: CzmlPacket[];
   private selectedEntityIds = new Set<string>();
   private initialized = false;
@@ -250,10 +259,12 @@ export class CesiumSceneManager {
     emptyDocumentFactory: EmptyDocumentFactory = () =>
       createEmptyDocument(new Date()),
     dataSourcePort?: CzmlDataSourcePort,
+    cameraController?: CameraControllerPort,
   ) {
     this.emptyDocument = cloneDocument(emptyDocumentFactory());
     this.sceneDocument = [];
     this.dataSourcePort = dataSourcePort;
+    this.cameraController = cameraController;
   }
 
   initialize(viewer?: Viewer): Promise<void> {
@@ -282,7 +293,14 @@ export class CesiumSceneManager {
       if (!viewer) {
         throw new Error("A Cesium Viewer is required for initialization");
       }
-      this.dataSourcePort = new CesiumCzmlDataSourcePort(viewer);
+      const cesiumPort = new CesiumCzmlDataSourcePort(viewer);
+      this.dataSourcePort = cesiumPort;
+      if (!this.cameraController) {
+        this.cameraController = createCesiumCameraController(
+          viewer,
+          (id) => cesiumPort.getEntityById(id),
+        );
+      }
     }
 
     const empty = cloneDocument(this.emptyDocument);
@@ -306,6 +324,7 @@ export class CesiumSceneManager {
     for (const operation of operations) {
       switch (operation.op) {
         case "clear": {
+          this.cameraController?.onSceneCleared();
           const nextDocument = reduceSceneDocument(
             this.sceneDocument,
             [operation],
@@ -358,6 +377,7 @@ export class CesiumSceneManager {
           break;
         }
         case "delete":
+          this.cameraController?.onEntitiesDeleted(operation.ids);
           for (const id of operation.ids) {
             port.removeById(id);
             this.sceneDocument = reduceSceneDocument(
@@ -402,11 +422,14 @@ export class CesiumSceneManager {
           break;
         }
         case "camera":
-          throw new Error(
-            "相机 SceneOp 尚未支持（unsupported）：请等待相机控制器接入后再执行。",
-          );
+          await this.requireCameraController().apply(operation);
+          break;
       }
     }
+  }
+
+  destroy(): void {
+    this.cameraController?.destroy();
   }
 
   buildSummary(): SceneSummary {
@@ -436,6 +459,13 @@ export class CesiumSceneManager {
       throw new Error("CesiumSceneManager must be initialized before use");
     }
     return this.dataSourcePort;
+  }
+
+  private requireCameraController(): CameraControllerPort {
+    if (!this.cameraController) {
+      throw new Error("相机控制器尚未初始化，无法执行 camera SceneOp。");
+    }
+    return this.cameraController;
   }
 
   private requireInitialization(): Promise<void> {
