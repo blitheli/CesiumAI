@@ -1,10 +1,5 @@
 import { useEffect, useRef } from "react";
-import {
-  TileMapServiceImageryProvider,
-  Viewer,
-  buildModuleUrl,
-  type Entity,
-} from "cesium";
+import { Ion, Viewer, type Entity } from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 
 export interface ViewerSceneManager {
@@ -26,19 +21,23 @@ export function ViewerHost({ sceneManager }: ViewerHostProps) {
       return;
     }
 
+    const ionToken = import.meta.env.VITE_CESIUM_ION_TOKEN;
+    if (typeof ionToken === "string" && ionToken.trim().length > 0) {
+      Ion.defaultAccessToken = ionToken;
+    }
+
     const viewer = new Viewer(container, {
       animation: true,
       timeline: true,
-      baseLayer: false,
-      baseLayerPicker: false,
-      fullscreenButton: false,
+      baseLayerPicker: true,
+      fullscreenButton: true,
       vrButton: false,
-      geocoder: false,
-      homeButton: false,
-      infoBox: false,
-      sceneModePicker: false,
-      selectionIndicator: false,
-      navigationHelpButton: false,
+      geocoder: true,
+      homeButton: true,
+      infoBox: true,
+      sceneModePicker: true,
+      selectionIndicator: true,
+      navigationHelpButton: true,
     });
     let disposed = false;
 
@@ -54,12 +53,6 @@ export function ViewerHost({ sceneManager }: ViewerHostProps) {
     const initialize = async () => {
       try {
         await sceneManager.initialize(viewer);
-        const imagery = await TileMapServiceImageryProvider.fromUrl(
-          buildModuleUrl("Assets/Textures/NaturalEarthII"),
-        );
-        if (!disposed) {
-          viewer.imageryLayers.addImageryProvider(imagery);
-        }
       } catch (error) {
         if (!disposed) {
           console.error("Failed to initialize the Cesium Viewer", error);

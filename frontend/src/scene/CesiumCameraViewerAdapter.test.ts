@@ -4,11 +4,13 @@ import {
   JulianDate,
   Math as CesiumMath,
   Matrix4,
+  ScreenSpaceEventType,
   Transforms,
 } from "cesium";
 import { vi } from "vitest";
 import {
   createCesiumCameraViewerAdapter,
+  createCesiumOrbitUserInputAdapter,
   headingPitchRangeFromLocalOffset,
   localOffsetFromHeadingPitchRange,
 } from "./CesiumCameraController";
@@ -37,7 +39,11 @@ function createViewerLikeFake(options?: { flyToResult?: boolean | Promise<boolea
     twistLeft: vi.fn(),
     twistRight: vi.fn(),
     lookAtTransform: vi.fn(
-      (transform: Matrix4, offset: HeadingPitchRange | Cartesian3) => {
+      (transform: Matrix4, offset?: HeadingPitchRange | Cartesian3) => {
+        // clearLookAt 仅传 IDENTITY，无 offset。
+        if (offset == null) {
+          return;
+        }
         const hpr =
           offset instanceof HeadingPitchRange
             ? offset
@@ -213,6 +219,91 @@ it("生产 adapter：读取目标参考系下相对 HeadingPitchRange", () => {
   expect(read.range).toBeCloseTo(range, 4);
   expect(read.heading).toBeCloseTo(heading, 4);
   expect(read.pitch).toBeCloseTo(pitch, 4);
+});
+
+it("生产 adapter：clearLookAt 使用 IDENTITY 解除约束", () => {
+  const fake = createViewerLikeFake();
+  const adapter = createCesiumCameraViewerAdapter(
+    fake.viewer as never,
+    () => undefined,
+  );
+
+  adapter.clearLookAt();
+
+  expect(fake.camera.lookAtTransform).toHaveBeenCalledWith(Matrix4.IDENTITY);
+});
+
+function createOrbitInputHandlerHarness() {
+  type HandlerAction = (...args: unknown[]) => void;
+  const actions = new Map<number, HandlerAction>();
+  const destroy = vi.fn();
+  const canvas = {} as HTMLCanvasElement;
+  const createHandler = vi.fn(() => ({
+    setInputAction: (action: HandlerAction, type: number) => {
+      actions.set(type, action);
+    },
+    destroy,
+  }));
+  const viewer = { scene: { canvas } };
+  const adapter = createCesiumOrbitUserInputAdapter(
+    viewer as never,
+    createHandler,
+  );
+  return { actions, destroy, canvas, createHandler, adapter };
+}
+
+it("生产 orbit 输入 adapter：拖拽/滚轮触发；未注册 LEFT_CLICK", () => {
+  const { actions, destroy, canvas, createHandler, adapter } =
+    createOrbitInputHandlerHarness();
+  const onGesture = vi.fn();
+  const unsubscribe = adapter.subscribe(onGesture);
+
+  expect(createHandler).toHaveBeenCalledWith(canvas);
+  expect(actions.has(ScreenSpaceEventType.LEFT_CLICK)).toBe(false);
+  expect(actions.has(ScreenSpaceEventType.MOUSE_MOVE)).toBe(true);
+  expect(actions.has(ScreenSpaceEventType.WHEEL)).toBe(true);
+
+  actions.get(ScreenSpaceEventType.LEFT_DOWN)?.();
+  actions.get(ScreenSpaceEventType.MOUSE_MOVE)?.();
+  expect(onGesture).toHaveBeenCalledWith("leftDrag");
+
+  onGesture.mockClear();
+  actions.get(ScreenSpaceEventType.LEFT_UP)?.();
+  actions.get(ScreenSpaceEventType.MIDDLE_DOWN)?.();
+  actions.get(ScreenSpaceEventType.MOUSE_MOVE)?.();
+  expect(onGesture).toHaveBeenCalledWith("middleDrag");
+
+  onGesture.mockClear();
+  actions.get(ScreenSpaceEventType.MIDDLE_UP)?.();
+  actions.get(ScreenSpaceEventType.RIGHT_DOWN)?.();
+  actions.get(ScreenSpaceEventType.MOUSE_MOVE)?.();
+  expect(onGesture).toHaveBeenCalledWith("rightDrag");
+
+  onGesture.mockClear();
+  actions.get(ScreenSpaceEventType.WHEEL)?.();
+  expect(onGesture).toHaveBeenCalledWith("wheel");
+
+  unsubscribe();
+  expect(destroy).toHaveBeenCalledOnce();
+});
+
+it("生产 orbit 输入 adapter：无按键按下时 MOUSE_MOVE（悬停）不调用 onGesture", () => {
+  const { actions, adapter } = createOrbitInputHandlerHarness();
+  const onGesture = vi.fn();
+  adapter.subscribe(onGesture);
+
+  expect(actions.has(ScreenSpaceEventType.LEFT_CLICK)).toBe(false);
+
+  // 悬停：未 LEFT/MIDDLE/RIGHT_DOWN 仅移动
+  actions.get(ScreenSpaceEventType.MOUSE_MOVE)?.();
+  expect(onGesture).not.toHaveBeenCalled();
+
+  // 松开后再次移动仍不触发
+  actions.get(ScreenSpaceEventType.LEFT_DOWN)?.();
+  actions.get(ScreenSpaceEventType.LEFT_UP)?.();
+  onGesture.mockClear();
+  actions.get(ScreenSpaceEventType.MOUSE_MOVE)?.();
+  expect(onGesture).not.toHaveBeenCalled();
 });
 
 it("生产 adapter + 控制器：orbitStep 相对当前非零 heading 增量", async () => {

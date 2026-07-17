@@ -183,14 +183,27 @@ async function openApp(
 ) {
   const requests: ChatRequest[] = [];
   const browserErrors: string[] = [];
+  const isBenignCesiumSandboxError = (text: string) =>
+    text.includes("Blocked script execution in 'about:blank'") &&
+    text.includes("sandboxed");
   const captureConsoleError = (message: ConsoleMessage) => {
-    if (message.type() === "error") {
-      browserErrors.push(message.text());
+    if (message.type() !== "error") {
+      return;
     }
+    const text = message.text();
+    // 典型 widgets（infoBox 等）使用 sandboxed iframe，Playwright 会报无害脚本拦截。
+    if (isBenignCesiumSandboxError(text)) {
+      return;
+    }
+    browserErrors.push(text);
   };
 
   page.on("console", captureConsoleError);
-  page.on("pageerror", (error) => browserErrors.push(error.message));
+  page.on("pageerror", (error) => {
+    if (!isBenignCesiumSandboxError(error.message)) {
+      browserErrors.push(error.message);
+    }
+  });
   await page.route("**/api/chat", async (route) => {
     expect(route.request().method()).toBe("POST");
     const request = route.request().postDataJSON() as ChatRequest;

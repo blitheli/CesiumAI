@@ -1,11 +1,14 @@
-import { Math as CesiumMath } from "cesium";
+import { Math as CesiumMath, ScreenSpaceEventType } from "cesium";
 import { vi } from "vitest";
 import type { CameraSceneOp } from "../contracts/chat";
 import {
   CesiumCameraController,
+  createCesiumOrbitUserInputAdapter,
   type CameraControllerPort,
   type CameraEntityAdapter,
   type CameraViewerAdapter,
+  type OrbitCancelGesture,
+  type OrbitUserInputAdapter,
 } from "./CesiumCameraController";
 
 type FakeEntity = CameraEntityAdapter & {
@@ -66,6 +69,7 @@ function createAdapter(options?: {
   twistLeft: ReturnType<typeof vi.fn>;
   twistRight: ReturnType<typeof vi.fn>;
   lookAtTransform: ReturnType<typeof vi.fn>;
+  clearLookAt: ReturnType<typeof vi.fn>;
   eastNorthUpToFixedFrame: ReturnType<typeof vi.fn>;
   getLookAtHeadingPitchRange: ReturnType<typeof vi.fn>;
   setTrackedEntity: ReturnType<typeof vi.fn>;
@@ -121,6 +125,7 @@ function createAdapter(options?: {
       currentLookAt = { ...offset };
     },
   );
+  const clearLookAt = vi.fn();
   const eastNorthUpToFixedFrame = vi.fn((position) => ({
     kind: "enu",
     position,
@@ -194,6 +199,7 @@ function createAdapter(options?: {
       };
       cameraHeadingDegrees = CesiumMath.toDegrees(offset.heading);
     },
+    clearLookAt,
     eastNorthUpToFixedFrame,
     getLookAtHeadingPitchRange,
     getCameraPositionWC,
@@ -218,6 +224,7 @@ function createAdapter(options?: {
     twistLeft,
     twistRight,
     lookAtTransform,
+    clearLookAt,
     eastNorthUpToFixedFrame,
     getLookAtHeadingPitchRange,
     setTrackedEntity,
@@ -245,8 +252,43 @@ function cameraOp(partial: Omit<CameraSceneOp, "op">): CameraSceneOp {
   return { op: "camera", ...partial };
 }
 
-function createController(adapter: CameraViewerAdapter): CameraControllerPort {
-  return new CesiumCameraController(adapter);
+function createOrbitUserInputFake(): {
+  adapter: OrbitUserInputAdapter;
+  subscribe: ReturnType<typeof vi.fn>;
+  unsubscribe: ReturnType<typeof vi.fn>;
+  emit: (gesture: OrbitCancelGesture) => void;
+  activeListeners: number;
+} {
+  const listeners = new Set<(gesture: OrbitCancelGesture) => void>();
+  const unsubscribe = vi.fn();
+  const subscribe = vi.fn((listener: (gesture: OrbitCancelGesture) => void) => {
+    listeners.add(listener);
+    return () => {
+      unsubscribe();
+      listeners.delete(listener);
+    };
+  });
+
+  return {
+    adapter: { subscribe },
+    subscribe,
+    unsubscribe,
+    emit: (gesture) => {
+      for (const listener of [...listeners]) {
+        listener(gesture);
+      }
+    },
+    get activeListeners() {
+      return listeners.size;
+    },
+  };
+}
+
+function createController(
+  adapter: CameraViewerAdapter,
+  orbitUserInput?: OrbitUserInputAdapter,
+): CameraControllerPort {
+  return new CesiumCameraController(adapter, orbitUserInput);
 }
 
 it("focus 查找目标实体并 flyTo，角度转为弧度", async () => {
@@ -813,4 +855,143 @@ it("目标不存在或当前时间无 position 时抛错且无 listener 泄漏",
   ).rejects.toThrow(/位置|position|无效/i);
   expect(fake.tickListeners).toHaveLength(0);
   expect(fake.removeTickListener).not.toHaveBeenCalled();
+});
+
+it("orbitStart 成功后注册用户输入监听；非环绕时不订阅", async () => {
+  const entity = createEntity("iss", { x: 1, y: 2, z: 3 });
+  const fake = createAdapter({ entities: [entity] });
+  const input = createOrbitUserInputFake();
+  const controller = createController(fake.adapter, input.adapter);
+
+  expect(input.subscribe).not.toHaveBeenCalled();
+
+  await controller.apply(
+    cameraOp({
+      action: "orbitStart",
+      targetId: "iss",
+      angularSpeedDegreesPerSecond: 15,
+      distanceMeters: 400,
+    }),
+  );
+
+  expect(input.subscribe).toHaveBeenCalledOnce();
+  expect(input.activeListeners).toBe(1);
+  expect(controller.getDiagnostics().orbitActive).toBe(true);
+});
+
+it.each([
+  "leftDrag",
+  "middleDrag",
+  "rightDrag",
+  "wheel",
+] as const)(
+  "环绕中 %s 手势停止环绕、清除 lookAt 并取消输入订阅",
+  async (gesture) => {
+    const entity = createEntity("iss", { x: 1, y: 2, z: 3 });
+    const fake = createAdapter({ entities: [entity] });
+    const input = createOrbitUserInputFake();
+    const controller = createController(fake.adapter, input.adapter);
+
+    await controller.apply(
+      cameraOp({
+        action: "orbitStart",
+        targetId: "iss",
+        angularSpeedDegreesPerSecond: 20,
+        distanceMeters: 500,
+      }),
+    );
+    expect(controller.getDiagnostics().orbitActive).toBe(true);
+    expect(fake.tickListeners).toHaveLength(1);
+    fake.clearLookAt.mockClear();
+
+    input.emit(gesture);
+
+    expect(controller.getDiagnostics().orbitActive).toBe(false);
+    expect(fake.tickListeners).toHaveLength(0);
+    expect(input.activeListeners).toBe(0);
+    expect(input.unsubscribe).toHaveBeenCalled();
+    expect(fake.clearLookAt).toHaveBeenCalledOnce();
+  },
+);
+
+it("环绕中悬停与点击选中不停止：驱动生产输入 handler 语义", async () => {
+  type HandlerAction = (...args: unknown[]) => void;
+  const actions = new Map<number, HandlerAction>();
+  const createHandler = vi.fn(() => ({
+    setInputAction: (action: HandlerAction, type: number) => {
+      actions.set(type, action);
+    },
+    destroy: vi.fn(),
+  }));
+  const orbitUserInput = createCesiumOrbitUserInputAdapter(
+    { scene: { canvas: {} as HTMLCanvasElement } } as never,
+    createHandler,
+  );
+
+  const entity = createEntity("iss", { x: 1, y: 2, z: 3 });
+  const fake = createAdapter({ entities: [entity] });
+  const controller = createController(fake.adapter, orbitUserInput);
+
+  await controller.apply(
+    cameraOp({
+      action: "orbitStart",
+      targetId: "iss",
+      angularSpeedDegreesPerSecond: 18,
+      distanceMeters: 450,
+    }),
+  );
+  expect(controller.getDiagnostics().orbitActive).toBe(true);
+  expect(fake.tickListeners).toHaveLength(1);
+  fake.clearLookAt.mockClear();
+
+  // 生产路径未注册 LEFT_CLICK：点击选中不会进入解除环绕回调。
+  expect(actions.has(ScreenSpaceEventType.LEFT_CLICK)).toBe(false);
+
+  // 悬停：无 *_DOWN 时 MOUSE_MOVE 不解除环绕。
+  actions.get(ScreenSpaceEventType.MOUSE_MOVE)?.();
+  expect(controller.getDiagnostics().orbitActive).toBe(true);
+  expect(fake.tickListeners).toHaveLength(1);
+  expect(fake.clearLookAt).not.toHaveBeenCalled();
+
+  // 对照：左键拖拽才会解除。
+  actions.get(ScreenSpaceEventType.LEFT_DOWN)?.();
+  actions.get(ScreenSpaceEventType.MOUSE_MOVE)?.();
+  expect(controller.getDiagnostics().orbitActive).toBe(false);
+  expect(fake.clearLookAt).toHaveBeenCalledOnce();
+});
+
+it("orbitStop、clear、目标删除和 destroy 都移除输入监听", async () => {
+  const entity = createEntity("iss", { x: 1, y: 2, z: 3 });
+  const fake = createAdapter({ entities: [entity] });
+  const input = createOrbitUserInputFake();
+  const controller = createController(fake.adapter, input.adapter);
+
+  const startOrbit = async () => {
+    await controller.apply(
+      cameraOp({
+        action: "orbitStart",
+        targetId: "iss",
+        angularSpeedDegreesPerSecond: 20,
+        distanceMeters: 300,
+      }),
+    );
+    expect(input.activeListeners).toBe(1);
+  };
+
+  await startOrbit();
+  await controller.apply(cameraOp({ action: "orbitStop" }));
+  expect(input.activeListeners).toBe(0);
+  expect(input.unsubscribe).toHaveBeenCalled();
+
+  await startOrbit();
+  controller.onSceneCleared();
+  expect(input.activeListeners).toBe(0);
+
+  await startOrbit();
+  controller.onEntitiesDeleted(["iss"]);
+  expect(input.activeListeners).toBe(0);
+
+  await startOrbit();
+  controller.destroy();
+  expect(input.activeListeners).toBe(0);
 });

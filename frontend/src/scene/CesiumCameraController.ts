@@ -6,11 +6,30 @@ import {
   Matrix3,
   Matrix4,
   Quaternion,
+  ScreenSpaceEventHandler,
+  ScreenSpaceEventType,
   Transforms,
   type Entity,
   type Viewer,
 } from "cesium";
 import type { CameraSceneOp } from "../contracts/chat";
+
+/** 会解除持续环绕的用户手势（点击选中/悬停不在此列）。 */
+export type OrbitCancelGesture =
+  | "leftDrag"
+  | "middleDrag"
+  | "rightDrag"
+  | "wheel";
+
+/** 环绕期间用户输入适配面：单测用 fake，生产用 ScreenSpaceEventHandler。 */
+export type OrbitUserInputAdapter = {
+  /** 注册解除环绕手势；返回取消订阅/销毁函数。 */
+  subscribe(onGesture: (gesture: OrbitCancelGesture) => void): () => void;
+};
+
+const noopOrbitUserInput: OrbitUserInputAdapter = {
+  subscribe: () => () => undefined,
+};
 
 /** 与 Cesium Camera.lookAtTransform 一致的 HPR→本地 offset（用于测试与生产读取）。 */
 export function localOffsetFromHeadingPitchRange(
@@ -104,6 +123,8 @@ export type CameraViewerAdapter = {
     transform: unknown,
     offset: { heading: number; pitch: number; range: number },
   ): void;
+  /** 清除 lookAt 约束，恢复自由相机控制。 */
+  clearLookAt(): void;
   eastNorthUpToFixedFrame(position: {
     x: number;
     y: number;
@@ -170,6 +191,7 @@ type OrbitState = {
   angularSpeedRadiansPerSecond: number;
   lastTickTime: unknown;
   unsubscribe: () => void;
+  unsubscribeInput: () => void;
 };
 
 function degreesToRadians(degrees: number): number {
@@ -189,11 +211,16 @@ function requireTargetId(targetId: string | null | undefined): string {
  */
 export class CesiumCameraController implements CameraControllerPort {
   private readonly adapter: CameraViewerAdapter;
+  private readonly orbitUserInput: OrbitUserInputAdapter;
   private orbit: OrbitState | undefined;
   private destroyed = false;
 
-  constructor(adapter: CameraViewerAdapter) {
+  constructor(
+    adapter: CameraViewerAdapter,
+    orbitUserInput: OrbitUserInputAdapter = noopOrbitUserInput,
+  ) {
     this.adapter = adapter;
+    this.orbitUserInput = orbitUserInput;
   }
 
   async apply(operation: CameraSceneOp): Promise<void> {
@@ -379,6 +406,7 @@ export class CesiumCameraController implements CameraControllerPort {
       angularSpeedRadiansPerSecond: this.orbit.angularSpeedRadiansPerSecond,
       lastTickTime: this.adapter.cloneTime(this.orbit.lastTickTime),
       unsubscribe: () => undefined,
+      unsubscribeInput: () => undefined,
     };
   }
 
@@ -413,6 +441,7 @@ export class CesiumCameraController implements CameraControllerPort {
       ...snapshot,
       lastTickTime: this.adapter.cloneTime(this.adapter.getCurrentTime()),
       unsubscribe: () => undefined,
+      unsubscribeInput: () => undefined,
     };
 
     const onTick = (clock: { currentTime: unknown }) => {
@@ -441,6 +470,12 @@ export class CesiumCameraController implements CameraControllerPort {
     };
 
     state.unsubscribe = this.adapter.addTickListener(onTick);
+    state.unsubscribeInput = this.orbitUserInput.subscribe(() => {
+      if (!this.orbit || this.orbit !== state) {
+        return;
+      }
+      this.stopOrbit();
+    });
     this.orbit = state;
   }
 
@@ -617,6 +652,7 @@ export class CesiumCameraController implements CameraControllerPort {
       angularSpeedRadiansPerSecond: degreesToRadians(speedDegrees),
       lastTickTime,
       unsubscribe: () => undefined,
+      unsubscribeInput: () => undefined,
     };
 
     const onTick = (clock: { currentTime: unknown }) => {
@@ -645,6 +681,12 @@ export class CesiumCameraController implements CameraControllerPort {
     };
 
     state.unsubscribe = this.adapter.addTickListener(onTick);
+    state.unsubscribeInput = this.orbitUserInput.subscribe(() => {
+      if (!this.orbit || this.orbit !== state) {
+        return;
+      }
+      this.stopOrbit();
+    });
     this.orbit = state;
   }
 
@@ -652,9 +694,11 @@ export class CesiumCameraController implements CameraControllerPort {
     if (!this.orbit) {
       return;
     }
-    const { unsubscribe } = this.orbit;
+    const { unsubscribe, unsubscribeInput } = this.orbit;
     this.orbit = undefined;
     unsubscribe();
+    unsubscribeInput();
+    this.adapter.clearLookAt();
   }
 
   private lookAtEntity(
@@ -784,6 +828,9 @@ export function createCesiumCameraViewerAdapter(
         new HeadingPitchRange(offset.heading, offset.pitch, offset.range),
       );
     },
+    clearLookAt: () => {
+      viewer.camera.lookAtTransform(Matrix4.IDENTITY);
+    },
     eastNorthUpToFixedFrame: (position) =>
       Transforms.eastNorthUpToFixedFrame(
         position as Parameters<typeof Transforms.eastNorthUpToFixedFrame>[0],
@@ -820,11 +867,82 @@ export function createCesiumCameraViewerAdapter(
   };
 }
 
+/** ScreenSpaceEventHandler 最小面，便于单测注入。 */
+export type OrbitScreenSpaceEventHandler = {
+  setInputAction(
+    action: (...args: unknown[]) => void,
+    type: number,
+  ): void;
+  destroy(): void;
+};
+
+/** 生产用：监听左键拖拽/中右键拖拽/滚轮，点击与悬停不触发。 */
+export function createCesiumOrbitUserInputAdapter(
+  viewer: Viewer,
+  createHandler: (
+    element: HTMLCanvasElement,
+  ) => OrbitScreenSpaceEventHandler = (element) =>
+    new ScreenSpaceEventHandler(element),
+): OrbitUserInputAdapter {
+  return {
+    subscribe(onGesture) {
+      const handler = createHandler(viewer.scene.canvas);
+      let leftDown = false;
+      let middleDown = false;
+      let rightDown = false;
+
+      handler.setInputAction(() => {
+        leftDown = true;
+      }, ScreenSpaceEventType.LEFT_DOWN);
+      handler.setInputAction(() => {
+        leftDown = false;
+      }, ScreenSpaceEventType.LEFT_UP);
+
+      handler.setInputAction(() => {
+        middleDown = true;
+      }, ScreenSpaceEventType.MIDDLE_DOWN);
+      handler.setInputAction(() => {
+        middleDown = false;
+      }, ScreenSpaceEventType.MIDDLE_UP);
+
+      handler.setInputAction(() => {
+        rightDown = true;
+      }, ScreenSpaceEventType.RIGHT_DOWN);
+      handler.setInputAction(() => {
+        rightDown = false;
+      }, ScreenSpaceEventType.RIGHT_UP);
+
+      handler.setInputAction(() => {
+        if (leftDown) {
+          onGesture("leftDrag");
+          return;
+        }
+        if (middleDown) {
+          onGesture("middleDrag");
+          return;
+        }
+        if (rightDown) {
+          onGesture("rightDrag");
+        }
+      }, ScreenSpaceEventType.MOUSE_MOVE);
+
+      handler.setInputAction(() => {
+        onGesture("wheel");
+      }, ScreenSpaceEventType.WHEEL);
+
+      return () => {
+        handler.destroy();
+      };
+    },
+  };
+}
+
 export function createCesiumCameraController(
   viewer: Viewer,
   getEntityById: (id: string) => Entity | undefined,
 ): CameraControllerPort {
   return new CesiumCameraController(
     createCesiumCameraViewerAdapter(viewer, getEntityById),
+    createCesiumOrbitUserInputAdapter(viewer),
   );
 }

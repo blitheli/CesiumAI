@@ -72,6 +72,7 @@ Agent__Model
 Astrox__BaseUrl
 Skills__Path
 VITE_API_BASE_URL
+VITE_CESIUM_ION_TOKEN
 ```
 
 例如：
@@ -83,9 +84,11 @@ export Agent__Model="kimi-k2.6"
 export Astrox__BaseUrl="http://astrox.cn:8765"
 export Skills__Path="../astrox-skills/skills"
 export VITE_API_BASE_URL="http://localhost:5088"
+# 可选：Cesium ion token（geocoder/部分影像资源）；未设置时典型 widgets 仍可显示
+export VITE_CESIUM_ION_TOKEN="<your-cesium-ion-token>"
 ```
 
-Shell 环境中的 key 只用于当前进程；不要把包含 key 的 shell 文件提交到 Git。`VITE_API_BASE_URL` 是公开的浏览器构建配置，绝不能用于存放 secret。
+Shell 环境中的 key 只用于当前进程；不要把包含 key 的 shell 文件提交到 Git。`VITE_API_BASE_URL` 与 `VITE_CESIUM_ION_TOKEN` 是公开的浏览器构建配置，绝不能用于存放后端 secret；ion token 若用于生产构建会进入前端产物，请按 Cesium ion 安全建议管理。
 
 ## 运行
 

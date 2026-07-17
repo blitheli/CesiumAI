@@ -4,6 +4,8 @@ import type { SceneDiagnostics } from "./scene/CesiumSceneManager";
 
 interface ImportMetaEnv {
   readonly VITE_API_BASE_URL?: string;
+  /** 可选 Cesium ion access token；未配置时典型 widgets 仍可显示。 */
+  readonly VITE_CESIUM_ION_TOKEN?: string;
   /** 仅测试/验收启用只读 diagnostics；生产构建不得设为 true。 */
   readonly VITE_ENABLE_TEST_DIAGNOSTICS?: string;
 }
