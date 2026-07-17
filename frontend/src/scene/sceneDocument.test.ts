@@ -130,3 +130,124 @@ it("executes upsert, clear, upsert, and delete in array order", () => {
   expect(result).toHaveLength(1);
   expect(result[0]?.id).toBe("document");
 });
+
+it("applies style patches with deep merge while preserving dynamic position data", () => {
+  const empty = createEmptyDocument(new Date("2026-07-16T00:00:00Z"));
+  const position = {
+    epoch: "2026-07-16T00:00:00Z",
+    cartesian: [0, 1, 2, 3, 4, 5, 6],
+  };
+  const current = [
+    ...empty,
+    {
+      id: "iss",
+      availability: "2026-07-16T00:00:00Z/2026-07-17T00:00:00Z",
+      position,
+      properties: { orbitHint: "sgp4" },
+      path: { width: 2, show: true },
+      point: { pixelSize: 8 },
+    },
+  ];
+
+  const result = reduceSceneDocument(
+    current,
+    [{ op: "style", id: "iss", patch: { path: { width: 5 }, point: { pixelSize: 12 } } }],
+    empty,
+  );
+
+  const iss = result.find((packet) => packet.id === "iss");
+  expect(iss?.position).toEqual(position);
+  expect(iss?.availability).toBe("2026-07-16T00:00:00Z/2026-07-17T00:00:00Z");
+  expect(iss?.properties).toEqual({ orbitHint: "sgp4" });
+  expect(iss?.path).toEqual({ width: 5, show: true });
+  expect(iss?.point).toEqual({ pixelSize: 12 });
+});
+
+it("replaces arrays and deletes null visual fields during style reduction", () => {
+  const empty = createEmptyDocument(new Date("2026-07-16T00:00:00Z"));
+  const current = [
+    ...empty,
+    {
+      id: "iss",
+      position: { cartesian: [1, 2, 3] },
+      path: { width: 2 },
+      point: { color: { rgba: [0, 255, 0, 255] } },
+      label: { text: "old" },
+    },
+  ];
+
+  const result = reduceSceneDocument(
+    current,
+    [
+      {
+        op: "style",
+        id: "iss",
+        patch: {
+          label: null,
+          point: { color: { rgba: [255, 0, 0, 255] } },
+        },
+      },
+    ],
+    empty,
+  );
+
+  const iss = result.find((packet) => packet.id === "iss");
+  expect(iss?.label).toBeUndefined();
+  expect(iss?.point).toEqual({ color: { rgba: [255, 0, 0, 255] } });
+  expect(iss?.position).toEqual({ cartesian: [1, 2, 3] });
+});
+
+it("rejects style on document, missing entities, and illegal patches", () => {
+  const empty = createEmptyDocument(new Date("2026-07-16T00:00:00Z"));
+  const current = [...empty, { id: "iss", path: { width: 2 } }];
+
+  expect(() =>
+    reduceSceneDocument(
+      current,
+      [{ op: "style", id: "document", patch: { path: { width: 5 } } }],
+      empty,
+    ),
+  ).toThrow();
+
+  expect(() =>
+    reduceSceneDocument(
+      current,
+      [{ op: "style", id: "missing", patch: { path: { width: 5 } } }],
+      empty,
+    ),
+  ).toThrow();
+
+  expect(() =>
+    reduceSceneDocument(
+      current,
+      [{ op: "style", id: "iss", patch: { position: {} } }],
+      empty,
+    ),
+  ).toThrow();
+
+  expect(() =>
+    reduceSceneDocument(
+      current,
+      [{ op: "style", id: "iss", patch: { unknown: {} } }],
+      empty,
+    ),
+  ).toThrow();
+});
+
+it("throws unsupported for camera operations until camera control is wired", () => {
+  const empty = createEmptyDocument(new Date("2026-07-16T00:00:00Z"));
+  const current = [...empty, { id: "iss", path: { width: 2 } }];
+
+  expect(() =>
+    reduceSceneDocument(
+      current,
+      [{ op: "camera", action: "track", targetId: "iss" }],
+      empty,
+    ),
+  ).toThrow(/unsupported|未支持|相机/i);
+
+  expect(current.find((packet) => packet.id === "iss")).toEqual({
+    id: "iss",
+    path: { width: 2 },
+  });
+});

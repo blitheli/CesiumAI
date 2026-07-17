@@ -3,9 +3,18 @@ using System.Text.Json;
 
 namespace CesiumAI.Api.Astrox;
 
-public sealed class OrbitScenarioService(IAstroxClient astroxClient) : IOrbitScenarioService
+public sealed class OrbitScenarioService : IOrbitScenarioService
 {
-    private readonly IAstroxClient _astroxClient = astroxClient ?? throw new ArgumentNullException(nameof(astroxClient));
+    private readonly IAstroxClient _astroxClient;
+    private readonly ICzmlPositionValidator _positionValidator;
+
+    public OrbitScenarioService(
+        IAstroxClient astroxClient,
+        ICzmlPositionValidator? positionValidator = null)
+    {
+        _astroxClient = astroxClient ?? throw new ArgumentNullException(nameof(astroxClient));
+        _positionValidator = positionValidator ?? new CzmlPositionValidator();
+    }
 
     public async Task<JsonElement> CreateSsoJ2PacketAsync(SsoJ2Scenario scenario, CancellationToken cancellationToken)
     {
@@ -39,14 +48,91 @@ public sealed class OrbitScenarioService(IAstroxClient astroxClient) : IOrbitSce
                 Step: scenario.StepSeconds),
             cancellationToken);
 
-        int trailTimeSeconds = checked((int)TimeSpan.FromHours(scenario.Hours).TotalSeconds);
+        return BuildSatellitePacket(
+            scenario.Id,
+            scenario.Name,
+            scenario.EpochUtc,
+            stop,
+            j2Response.Position,
+            $"{FormatAltitude(scenario.AltitudeKm)} km SSO / J2");
+    }
+
+    public async Task<JsonElement> CreatePacketFromPropagationAsync(
+        string id,
+        string name,
+        string propagatorPath,
+        JsonElement request,
+        DateTimeOffset startUtc,
+        DateTimeOffset stopUtc,
+        string? orbitHint,
+        CancellationToken cancellationToken)
+    {
+        ValidatePacketIdentity(id, name);
+        ValidateAvailabilityWindow(startUtc, stopUtc);
+        // 发往 Astrox 前强制校验请求根 Start/Stop/Step，失败不发 HTTP。
+        PropagationRequestValidator.Validate(request, startUtc, stopUtc);
+
+        GenericPropagationResponse response = await _astroxClient.PropagateAsync(
+            propagatorPath,
+            request,
+            cancellationToken);
+
+        JsonElement validatedPosition = _positionValidator.ValidateAndClone(
+            response.Position,
+            startUtc,
+            stopUtc);
+
+        return BuildSatellitePacket(
+            id,
+            name,
+            startUtc,
+            stopUtc,
+            validatedPosition,
+            orbitHint);
+    }
+
+    public JsonElement CreatePacketFromPositions(
+        string id,
+        string name,
+        JsonElement position,
+        DateTimeOffset startUtc,
+        DateTimeOffset stopUtc,
+        string? orbitHint)
+    {
+        ValidatePacketIdentity(id, name);
+        ValidateAvailabilityWindow(startUtc, stopUtc);
+
+        JsonElement validatedPosition = _positionValidator.ValidateAndClone(
+            position,
+            startUtc,
+            stopUtc);
+
+        return BuildSatellitePacket(
+            id,
+            name,
+            startUtc,
+            stopUtc,
+            validatedPosition,
+            orbitHint);
+    }
+
+    private static JsonElement BuildSatellitePacket(
+        string id,
+        string name,
+        DateTimeOffset startUtc,
+        DateTimeOffset stopUtc,
+        JsonElement position,
+        string? orbitHint)
+    {
+        int trailTimeSeconds = checked((int)(stopUtc - startUtc).TotalSeconds);
+        string hint = string.IsNullOrWhiteSpace(orbitHint) ? name : orbitHint.Trim();
 
         return JsonSerializer.SerializeToElement(new
         {
-            id = scenario.Id,
-            name = scenario.Name,
-            availability = $"{FormatUtc(scenario.EpochUtc)}/{FormatUtc(stop)}",
-            position = j2Response.Position,
+            id,
+            name,
+            availability = $"{FormatUtc(startUtc)}/{FormatUtc(stopUtc)}",
+            position,
             point = new
             {
                 pixelSize = 8,
@@ -76,10 +162,39 @@ public sealed class OrbitScenarioService(IAstroxClient astroxClient) : IOrbitSce
             {
                 orbitHint = new
                 {
-                    @string = $"{FormatAltitude(scenario.AltitudeKm)} km SSO / J2"
+                    @string = hint
                 }
             }
         });
+    }
+
+    private static void ValidatePacketIdentity(string id, string name)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("Satellite id is required.", nameof(id));
+        }
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("Satellite name is required.", nameof(name));
+        }
+    }
+
+    private static void ValidateAvailabilityWindow(DateTimeOffset startUtc, DateTimeOffset stopUtc)
+    {
+        DateTimeOffset start = startUtc.ToUniversalTime();
+        DateTimeOffset stop = stopUtc.ToUniversalTime();
+
+        if (stop <= start)
+        {
+            throw new ArgumentException("Availability stop 必须晚于 start。");
+        }
+
+        if (stop - start > TimeSpan.FromHours(24))
+        {
+            throw new ArgumentException("Availability 窗口不能超过 24 小时。");
+        }
     }
 
     private static void ValidateScenario(SsoJ2Scenario scenario)

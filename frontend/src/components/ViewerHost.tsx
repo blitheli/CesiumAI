@@ -10,6 +10,7 @@ import "cesium/Build/Cesium/Widgets/widgets.css";
 export interface ViewerSceneManager {
   initialize(viewer: Viewer): Promise<void>;
   setSelectedEntityIds(ids: string[]): void;
+  destroy(): void;
 }
 
 export type ViewerHostProps = {
@@ -71,6 +72,7 @@ export function ViewerHost({ sceneManager }: ViewerHostProps) {
     return () => {
       disposed = true;
       removeSelectionListener();
+      sceneManager.destroy();
       viewer.destroy();
     };
   }, [sceneManager]);

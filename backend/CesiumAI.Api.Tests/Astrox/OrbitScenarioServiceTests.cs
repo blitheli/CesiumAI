@@ -59,8 +59,7 @@ public class OrbitScenarioServiceTests
             throw new InvalidOperationException($"Unexpected path {request.RequestUri.AbsolutePath}");
         });
 
-        var client = CreateAstroxClient(handler);
-        var service = new OrbitScenarioService(client);
+        var service = CreateService(handler);
 
         Task<JsonElement> createPacketTask = service.CreateSsoJ2PacketAsync(CreateScenario(), CancellationToken.None);
         JsonElement packet = await createPacketTask;
@@ -134,7 +133,7 @@ public class OrbitScenarioServiceTests
                 """));
         });
 
-        var service = new OrbitScenarioService(CreateAstroxClient(handler));
+        var service = CreateService(handler);
         JsonElement? packet = null;
 
         Func<Task> act = async () => packet = await service.CreateSsoJ2PacketAsync(CreateScenario(), CancellationToken.None);
@@ -182,7 +181,7 @@ public class OrbitScenarioServiceTests
                 """));
         });
 
-        var service = new OrbitScenarioService(CreateAstroxClient(handler));
+        var service = CreateService(handler);
         JsonElement? packet = null;
 
         Func<Task> act = async () => packet = await service.CreateSsoJ2PacketAsync(CreateScenario(), CancellationToken.None);
@@ -225,7 +224,7 @@ public class OrbitScenarioServiceTests
             return Task.FromResult(
                 StubHttpMessageHandler.Json(HttpStatusCode.OK, response));
         });
-        var service = new OrbitScenarioService(CreateAstroxClient(handler));
+        var service = CreateService(handler);
         JsonElement? packet = null;
 
         Func<Task> act = async () =>
@@ -238,13 +237,236 @@ public class OrbitScenarioServiceTests
         packet.Should().BeNull();
     }
 
+    [Fact]
+    public async Task CreatePacketFromPropagationAsync_BuildsCompleteSatellitePacket_WithValidatedPosition()
+    {
+        var requestedPaths = new List<string>();
+        string? capturedBody = null;
+        var handler = new StubHttpMessageHandler(async (request, _) =>
+        {
+            requestedPaths.Add(request.RequestUri!.AbsolutePath);
+            capturedBody = await request.Content!.ReadAsStringAsync();
+            return StubHttpMessageHandler.Json(HttpStatusCode.OK, """
+                {
+                  "IsSuccess": true,
+                  "Message": "ok",
+                  "Position": {
+                    "epoch": "2026-07-16T00:00:00.000Z",
+                    "cartesian": [0, 1, 2, 3, 60, 4, 5, 6]
+                  },
+                  "Period": 5400
+                }
+                """);
+        });
+
+        var service = CreateService(handler);
+        const string requestJson =
+            """{"Start":"2026-07-16T00:00:00.000Z","Stop":"2026-07-16T01:00:00.000Z","Step":60,"CentralBody":"Earth"}""";
+        using JsonDocument requestDocument = JsonDocument.Parse(requestJson);
+        DateTimeOffset start = DateTimeOffset.Parse("2026-07-16T00:00:00Z");
+        DateTimeOffset stop = DateTimeOffset.Parse("2026-07-16T01:00:00Z");
+
+        JsonElement packet = await service.CreatePacketFromPropagationAsync(
+            id: "sat-twobody",
+            name: "TwoBody Sat",
+            propagatorPath: "/Propagator/TwoBody",
+            request: requestDocument.RootElement,
+            startUtc: start,
+            stopUtc: stop,
+            orbitHint: "TwoBody demo",
+            cancellationToken: CancellationToken.None);
+
+        requestedPaths.Should().Equal("/Propagator/TwoBody");
+        capturedBody.Should().Be(requestJson);
+        packet.EnumerateObject().Select(property => property.Name).Should().BeEquivalentTo(
+            ["id", "name", "availability", "position", "point", "path", "properties"]);
+        packet.GetProperty("id").GetString().Should().Be("sat-twobody");
+        packet.GetProperty("name").GetString().Should().Be("TwoBody Sat");
+        packet.GetProperty("availability").GetString()
+            .Should().Be("2026-07-16T00:00:00.000Z/2026-07-16T01:00:00.000Z");
+        packet.GetProperty("position").GetProperty("cartesian")
+            .EnumerateArray()
+            .Select(value => value.GetDouble())
+            .Should()
+            .Equal([0, 1, 2, 3, 60, 4, 5, 6]);
+        packet.GetProperty("point").GetProperty("pixelSize").GetInt32().Should().Be(8);
+        packet.GetProperty("path").GetProperty("trailTime").GetInt32().Should().Be(3600);
+        packet.GetProperty("properties").GetProperty("orbitHint").GetProperty("string")
+            .GetString().Should().Be("TwoBody demo");
+    }
+
+    [Fact]
+    public void CreatePacketFromPositions_BuildsCompleteSatellitePacket()
+    {
+        var service = CreateService(new StubHttpMessageHandler((_, _) =>
+            throw new InvalidOperationException("Direct positions must not call Astrox.")));
+        using JsonDocument positionDocument = JsonDocument.Parse("""
+            {
+              "epoch": "2026-07-16T00:00:00.000Z",
+              "cartesianVelocity": [0, 1, 2, 3, 4, 5, 6]
+            }
+            """);
+        DateTimeOffset start = DateTimeOffset.Parse("2026-07-16T00:00:00Z");
+        DateTimeOffset stop = DateTimeOffset.Parse("2026-07-16T00:30:00Z");
+
+        JsonElement packet = service.CreatePacketFromPositions(
+            id: "sat-pos",
+            name: "Positions Sat",
+            position: positionDocument.RootElement,
+            startUtc: start,
+            stopUtc: stop,
+            orbitHint: "external positions");
+
+        packet.GetProperty("id").GetString().Should().Be("sat-pos");
+        packet.GetProperty("availability").GetString()
+            .Should().Be("2026-07-16T00:00:00.000Z/2026-07-16T00:30:00.000Z");
+        packet.GetProperty("path").GetProperty("trailTime").GetInt32().Should().Be(1800);
+        packet.GetProperty("properties").GetProperty("orbitHint").GetProperty("string")
+            .GetString().Should().Be("external positions");
+        packet.GetProperty("position").GetProperty("cartesianVelocity")
+            .EnumerateArray()
+            .Select(value => value.GetDouble())
+            .Should()
+            .Equal([0, 1, 2, 3, 4, 5, 6]);
+    }
+
+    [Fact]
+    public async Task CreatePacketFromPropagationAsync_DoesNotReturnPacket_WhenAstroxFails()
+    {
+        var handler = new StubHttpMessageHandler((_, _) =>
+            Task.FromResult(StubHttpMessageHandler.Json(HttpStatusCode.OK, """
+                {
+                  "IsSuccess": false,
+                  "Message": "propagation failed",
+                  "Position": {},
+                  "Period": 0
+                }
+                """)));
+        var service = CreateService(handler);
+        using JsonDocument requestDocument = JsonDocument.Parse(
+            """{"Start":"2026-07-16T00:00:00Z","Stop":"2026-07-16T01:00:00Z","Step":60}""");
+        JsonElement? packet = null;
+
+        Func<Task> act = async () => packet = await service.CreatePacketFromPropagationAsync(
+            "sat-1",
+            "sat-1",
+            "/Propagator/SGP4",
+            requestDocument.RootElement,
+            DateTimeOffset.Parse("2026-07-16T00:00:00Z"),
+            DateTimeOffset.Parse("2026-07-16T01:00:00Z"),
+            "SGP4",
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<AstroxException>()
+            .WithMessage("*Propagator/SGP4*propagation failed*");
+        packet.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CreatePacketFromPropagationAsync_DoesNotReturnPacket_WhenPositionValidationFails()
+    {
+        var handler = new StubHttpMessageHandler((_, _) =>
+            Task.FromResult(StubHttpMessageHandler.Json(HttpStatusCode.OK, """
+                {
+                  "IsSuccess": true,
+                  "Message": "ok",
+                  "Position": {
+                    "epoch": "2026-07-16T00:00:00.000Z",
+                    "cartesian": [0, 1, 2, 3, 99999, 4, 5, 6]
+                  },
+                  "Period": 5400
+                }
+                """)));
+        var service = CreateService(handler);
+        using JsonDocument requestDocument = JsonDocument.Parse(
+            """{"Start":"2026-07-16T00:00:00Z","Stop":"2026-07-16T01:00:00Z","Step":60}""");
+        JsonElement? packet = null;
+
+        Func<Task> act = async () => packet = await service.CreatePacketFromPropagationAsync(
+            "sat-1",
+            "sat-1",
+            "/Propagator/TwoBody",
+            requestDocument.RootElement,
+            DateTimeOffset.Parse("2026-07-16T00:00:00Z"),
+            DateTimeOffset.Parse("2026-07-16T01:00:00Z"),
+            null,
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        packet.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CreatePacketFromPropagationAsync_RejectsMissingStartStopStep_WithoutHttp()
+    {
+        var httpCalls = 0;
+        var handler = new StubHttpMessageHandler((_, _) =>
+        {
+            httpCalls++;
+            throw new InvalidOperationException("校验失败时不得发往 Astrox。");
+        });
+        var service = CreateService(handler);
+        using JsonDocument requestDocument = JsonDocument.Parse("""{"Step":60,"CentralBody":"Earth"}""");
+
+        Func<Task> act = async () => await service.CreatePacketFromPropagationAsync(
+            "sat-1",
+            "sat-1",
+            "/Propagator/TwoBody",
+            requestDocument.RootElement,
+            DateTimeOffset.Parse("2026-07-16T00:00:00Z"),
+            DateTimeOffset.Parse("2026-07-16T01:00:00Z"),
+            null,
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        httpCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task CreatePacketFromPropagationAsync_RejectsMultiYearOrOneSecondMismatch_WithoutHttp()
+    {
+        var httpCalls = 0;
+        var handler = new StubHttpMessageHandler((_, _) =>
+        {
+            httpCalls++;
+            throw new InvalidOperationException("校验失败时不得发往 Astrox。");
+        });
+        var service = CreateService(handler);
+        DateTimeOffset start = DateTimeOffset.Parse("2026-07-16T00:00:00Z");
+        DateTimeOffset stop = DateTimeOffset.Parse("2026-07-16T01:00:00Z");
+
+        using JsonDocument multiYear = JsonDocument.Parse("""
+            {
+              "Start": "2020-01-01T00:00:00Z",
+              "Stop": "2026-07-16T00:00:00Z",
+              "Step": 60
+            }
+            """);
+        using JsonDocument oneSecond = JsonDocument.Parse("""
+            {
+              "Start": "2026-07-16T00:00:00Z",
+              "Stop": "2026-07-16T00:00:01Z",
+              "Step": 1
+            }
+            """);
+
+        Func<Task> multiYearAct = async () => await service.CreatePacketFromPropagationAsync(
+            "sat-1", "sat-1", "/Propagator/SGP4", multiYear.RootElement, start, stop, null, CancellationToken.None);
+        Func<Task> oneSecondAct = async () => await service.CreatePacketFromPropagationAsync(
+            "sat-1", "sat-1", "/Propagator/SGP4", oneSecond.RootElement, start, stop, null, CancellationToken.None);
+
+        await multiYearAct.Should().ThrowAsync<ArgumentException>();
+        await oneSecondAct.Should().ThrowAsync<ArgumentException>();
+        httpCalls.Should().Be(0);
+    }
+
     [Theory]
     [MemberData(nameof(InvalidScenarios))]
     public async Task CreateSsoJ2PacketAsync_RejectsInvalidScenarioInput(SsoJ2Scenario scenario)
     {
         var handler = new StubHttpMessageHandler((_, _) =>
             throw new InvalidOperationException("Validation should short-circuit before any HTTP call."));
-        var service = new OrbitScenarioService(CreateAstroxClient(handler));
+        var service = CreateService(handler);
 
         Func<Task> act = async () => await service.CreateSsoJ2PacketAsync(scenario, CancellationToken.None);
 
@@ -275,6 +497,9 @@ public class OrbitScenarioServiceTests
             Hours: 24,
             StepSeconds: 60,
             LocalTimeOfDescendingNode: 10.5);
+
+    private static OrbitScenarioService CreateService(HttpMessageHandler handler)
+        => new(CreateAstroxClient(handler), new CzmlPositionValidator());
 
     private static AstroxClient CreateAstroxClient(HttpMessageHandler handler)
     {

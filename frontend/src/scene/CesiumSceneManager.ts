@@ -15,6 +15,12 @@ import {
   buildSceneSummary,
   pickRelevantPackets as selectRelevantPackets,
 } from "./summary";
+import { assertNever } from "../contracts/assertNever";
+import {
+  createCesiumCameraController,
+  type CameraControllerPort,
+  type CameraDiagnostics,
+} from "./CesiumCameraController";
 
 export interface CzmlDataSourcePort {
   load(packets: CzmlPacket[]): Promise<unknown>;
@@ -49,7 +55,13 @@ export type SceneEntityDiagnostics = {
   hasPositionAtCurrentTime: boolean;
   hasPoint: boolean;
   hasPath: boolean;
+  hasCanonicalPosition?: boolean;
+  /** canonical packet 中 Position 采样点数量（只读，用于样式后保留校验）。 */
+  canonicalPositionSampleCount?: number;
   positionAtCurrentTime?: [number, number, number];
+  pointPixelSize?: number;
+  pointColorRgba?: [number, number, number, number];
+  pathWidth?: number;
 };
 
 export type SceneDiagnostics = {
@@ -58,6 +70,7 @@ export type SceneDiagnostics = {
     stopTime: string;
     currentTime: string;
   };
+  camera?: CameraDiagnostics;
   entities: SceneEntityDiagnostics[];
 };
 
@@ -141,6 +154,10 @@ class CesiumCzmlDataSourcePort implements CzmlDataSourcePort {
     this.dataSource = new CzmlDataSource("scene");
   }
 
+  getEntityById(id: string) {
+    return this.dataSource.entities.getById(id);
+  }
+
   async load(packets: CzmlPacket[]): Promise<unknown> {
     const result = await this.dataSource.load(packets);
     if (!this.attached) {
@@ -207,12 +224,32 @@ class CesiumCzmlDataSourcePort implements CzmlDataSourcePort {
     const currentTime = this.viewer.clock.currentTime;
     const entities = this.dataSource.entities.values.map((entity) => {
       const position = entity.position?.getValue(currentTime);
+      const pixelSize = entity.point?.pixelSize?.getValue(currentTime);
+      const color = entity.point?.color?.getValue(currentTime);
+      const pathWidth = entity.path?.width?.getValue(currentTime);
+      const pointColorRgba =
+        color &&
+        typeof color.red === "number" &&
+        typeof color.green === "number" &&
+        typeof color.blue === "number" &&
+        typeof color.alpha === "number"
+          ? ([
+              Math.round(color.red * 255),
+              Math.round(color.green * 255),
+              Math.round(color.blue * 255),
+              Math.round(color.alpha * 255),
+            ] as [number, number, number, number])
+          : undefined;
+
       return {
         id: entity.id,
         hasPosition: entity.position !== undefined,
         hasPositionAtCurrentTime: position !== undefined,
         hasPoint: entity.point !== undefined,
         hasPath: entity.path !== undefined,
+        ...(typeof pixelSize === "number" ? { pointPixelSize: pixelSize } : {}),
+        ...(pointColorRgba ? { pointColorRgba } : {}),
+        ...(typeof pathWidth === "number" ? { pathWidth } : {}),
         ...(position
           ? {
               positionAtCurrentTime: [
@@ -240,6 +277,7 @@ class CesiumCzmlDataSourcePort implements CzmlDataSourcePort {
 export class CesiumSceneManager {
   private readonly emptyDocument: CzmlPacket[];
   private dataSourcePort: CzmlDataSourcePort | undefined;
+  private cameraController: CameraControllerPort | undefined;
   private sceneDocument: CzmlPacket[];
   private selectedEntityIds = new Set<string>();
   private initialized = false;
@@ -250,10 +288,12 @@ export class CesiumSceneManager {
     emptyDocumentFactory: EmptyDocumentFactory = () =>
       createEmptyDocument(new Date()),
     dataSourcePort?: CzmlDataSourcePort,
+    cameraController?: CameraControllerPort,
   ) {
     this.emptyDocument = cloneDocument(emptyDocumentFactory());
     this.sceneDocument = [];
     this.dataSourcePort = dataSourcePort;
+    this.cameraController = cameraController;
   }
 
   initialize(viewer?: Viewer): Promise<void> {
@@ -282,7 +322,14 @@ export class CesiumSceneManager {
       if (!viewer) {
         throw new Error("A Cesium Viewer is required for initialization");
       }
-      this.dataSourcePort = new CesiumCzmlDataSourcePort(viewer);
+      const cesiumPort = new CesiumCzmlDataSourcePort(viewer);
+      this.dataSourcePort = cesiumPort;
+      if (!this.cameraController) {
+        this.cameraController = createCesiumCameraController(
+          viewer,
+          (id) => cesiumPort.getEntityById(id),
+        );
+      }
     }
 
     const empty = cloneDocument(this.emptyDocument);
@@ -306,6 +353,7 @@ export class CesiumSceneManager {
     for (const operation of operations) {
       switch (operation.op) {
         case "clear": {
+          // 先成功 load/提交 document，再清相机；load 失败保留原 track/orbit。
           const nextDocument = reduceSceneDocument(
             this.sceneDocument,
             [operation],
@@ -313,6 +361,7 @@ export class CesiumSceneManager {
           );
           await port.load(cloneDocument(nextDocument));
           this.sceneDocument = nextDocument;
+          this.cameraController?.onSceneCleared();
           break;
         }
         case "upsert": {
@@ -328,6 +377,12 @@ export class CesiumSceneManager {
             businessPackets,
           );
           if (businessPackets.length > 0) {
+            const replacedIds = businessPackets.map((packet) => packet.id);
+            // load 会重建全部实体：先快照 tracked id，失败回滚后无条件重绑（即使更新 A 跟踪 B）。
+            const trackedSnapshot =
+              this.cameraController?.snapshotTrackedTargetId() ?? null;
+            const replacementTx =
+              this.cameraController?.beginEntityReplacement(replacedIds);
             const viewerClockSnapshot = port.snapshotViewerClock();
             try {
               for (const packet of businessPackets) {
@@ -341,13 +396,32 @@ export class CesiumSceneManager {
               ) {
                 port.syncViewerClock(nextClock);
               }
+              replacementTx?.commit();
             } catch (error) {
               try {
                 await port.load(cloneDocument(previousDocument));
-                port.restoreViewerClock(viewerClockSnapshot);
-              } catch (rollbackError) {
+              } catch (loadError) {
                 throw new AggregateError(
-                  [error, rollbackError],
+                  [error, loadError],
+                  "CZML upsert failed and the prior Cesium document could not be restored",
+                );
+              }
+
+              // load 成功后：restore 抛错也必须重绑；分别捕获并聚合全部错误。
+              const secondaryErrors: unknown[] = [];
+              try {
+                port.restoreViewerClock(viewerClockSnapshot);
+              } catch (restoreError) {
+                secondaryErrors.push(restoreError);
+              }
+              try {
+                this.cameraController?.rebindAfterReload(trackedSnapshot);
+              } catch (rebindError) {
+                secondaryErrors.push(rebindError);
+              }
+              if (secondaryErrors.length > 0) {
+                throw new AggregateError(
+                  [error, ...secondaryErrors],
                   "CZML upsert failed and the prior Cesium document could not be restored",
                 );
               }
@@ -358,6 +432,7 @@ export class CesiumSceneManager {
           break;
         }
         case "delete":
+          this.cameraController?.onEntitiesDeleted(operation.ids);
           for (const id of operation.ids) {
             port.removeById(id);
             this.sceneDocument = reduceSceneDocument(
@@ -367,8 +442,74 @@ export class CesiumSceneManager {
             );
           }
           break;
+        case "style": {
+          const previousDocument = cloneDocument(this.sceneDocument);
+          const nextDocument = reduceSceneDocument(
+            this.sceneDocument,
+            [operation],
+            this.emptyDocument,
+          );
+          const completePacket = nextDocument.find(
+            (packet) => packet.id === operation.id,
+          );
+          if (!completePacket) {
+            throw new Error(`样式目标实体不存在：'${operation.id}'。`);
+          }
+
+          const trackedSnapshot =
+            this.cameraController?.snapshotTrackedTargetId() ?? null;
+          const replacementTx =
+            this.cameraController?.beginEntityReplacement([operation.id]);
+          const viewerClockSnapshot = port.snapshotViewerClock();
+          try {
+            port.removeById(operation.id);
+            await port.process(cloneDocument([completePacket]));
+            replacementTx?.commit();
+          } catch (error) {
+            try {
+              await port.load(cloneDocument(previousDocument));
+            } catch (loadError) {
+              throw new AggregateError(
+                [error, loadError],
+                "CZML style 失败且无法恢复先前的 Cesium document",
+              );
+            }
+
+            // load 成功后：restore 抛错也必须重绑；分别捕获并聚合全部错误。
+            const secondaryErrors: unknown[] = [];
+            try {
+              port.restoreViewerClock(viewerClockSnapshot);
+            } catch (restoreError) {
+              secondaryErrors.push(restoreError);
+            }
+            try {
+              this.cameraController?.rebindAfterReload(trackedSnapshot);
+            } catch (rebindError) {
+              secondaryErrors.push(rebindError);
+            }
+            if (secondaryErrors.length > 0) {
+              throw new AggregateError(
+                [error, ...secondaryErrors],
+                "CZML style 失败且无法恢复先前的 Cesium document",
+              );
+            }
+            throw error;
+          }
+
+          this.sceneDocument = nextDocument;
+          break;
+        }
+        case "camera":
+          await this.requireCameraController().apply(operation);
+          break;
+        default:
+          assertNever(operation, `未知 SceneOp：${JSON.stringify(operation)}`);
       }
     }
+  }
+
+  destroy(): void {
+    this.cameraController?.destroy();
   }
 
   buildSummary(): SceneSummary {
@@ -388,9 +529,46 @@ export class CesiumSceneManager {
   }
 
   getSceneDiagnostics(): SceneDiagnostics {
-    return structuredClone(
+    const base = structuredClone(
       this.requireDataSourcePort().getSceneDiagnostics(),
     );
+    const camera = this.cameraController?.getDiagnostics() ?? {
+      trackedEntityId: null,
+      orbitActive: false,
+      orbitTargetId: null,
+      orbitHeadingDegrees: null,
+      headingDegrees: null,
+      positionWC: null,
+    };
+
+    return {
+      ...base,
+      camera: structuredClone(camera),
+      entities: base.entities.map((entity) => {
+        const packet = this.sceneDocument.find(
+          (candidate) => candidate.id === entity.id,
+        );
+        const position =
+          packet != null &&
+          "position" in packet &&
+          packet.position != null &&
+          typeof packet.position === "object"
+            ? (packet.position as Record<string, unknown>)
+            : undefined;
+        const samples = Array.isArray(position?.cartesianVelocity)
+          ? position.cartesianVelocity
+          : Array.isArray(position?.cartesian)
+            ? position.cartesian
+            : undefined;
+        return {
+          ...entity,
+          hasCanonicalPosition: position !== undefined,
+          ...(samples
+            ? { canonicalPositionSampleCount: samples.length }
+            : {}),
+        };
+      }),
+    };
   }
 
   private requireDataSourcePort(): CzmlDataSourcePort {
@@ -398,6 +576,13 @@ export class CesiumSceneManager {
       throw new Error("CesiumSceneManager must be initialized before use");
     }
     return this.dataSourcePort;
+  }
+
+  private requireCameraController(): CameraControllerPort {
+    if (!this.cameraController) {
+      throw new Error("相机控制器尚未初始化，无法执行 camera SceneOp。");
+    }
+    return this.cameraController;
   }
 
   private requireInitialization(): Promise<void> {

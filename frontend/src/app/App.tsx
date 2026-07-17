@@ -45,6 +45,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "请求失败，请稍后再试。";
 }
 
+/** 仅测试/验收构建启用只读 diagnostics；生产默认关闭。 */
+export const testDiagnosticsEnabled =
+  import.meta.env.VITE_ENABLE_TEST_DIAGNOSTICS === "true";
+
 export function App({
   sceneManager,
   chatClient = postChat,
@@ -67,6 +71,19 @@ export function App({
     },
     [],
   );
+
+  // 仅在显式测试开关下挂载只读 live diagnostics；正常生产构建不得暴露 window 全局。
+  useEffect(() => {
+    if (!testDiagnosticsEnabled) {
+      return;
+    }
+
+    window.__CESIUM_AI_READ_DIAGNOSTICS__ = () =>
+      sceneManager.getSceneDiagnostics();
+    return () => {
+      delete window.__CESIUM_AI_READ_DIAGNOSTICS__;
+    };
+  }, [sceneManager]);
 
   const addMessage = (role: UiMessage["role"], text: string) => {
     messageSequence.current += 1;
@@ -110,7 +127,9 @@ export function App({
       setSessionId(response.sessionId);
       addMessage("assistant", response.message);
       await sceneManager.applySceneOps(response.sceneOps);
-      setSceneDiagnostics(sceneManager.getSceneDiagnostics());
+      if (testDiagnosticsEnabled) {
+        setSceneDiagnostics(sceneManager.getSceneDiagnostics());
+      }
     } catch (requestError) {
       setError(errorMessage(requestError));
     } finally {
@@ -123,7 +142,7 @@ export function App({
     <main className="app-shell" aria-label="CesiumAI">
       <section className="viewer-pane" aria-label="三维场景">
         <ViewerComponent sceneManager={sceneManager} />
-        {sceneDiagnostics ? (
+        {testDiagnosticsEnabled && sceneDiagnostics ? (
           <output
             className="scene-diagnostics"
             aria-label="场景诊断"

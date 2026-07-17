@@ -14,6 +14,7 @@ public sealed class AgentFactory : IAgentRuntimeFactory, IDisposable
 {
     private readonly AgentOptions _agentOptions;
     private readonly IOrbitScenarioService _orbitScenarioService;
+    private readonly ISceneStyleValidator _styleValidator;
     private readonly AstroxRawTools _rawTools;
     private readonly ILoggerFactory _loggerFactory;
     private readonly AgentSkillsProvider _skillsProvider;
@@ -23,6 +24,7 @@ public sealed class AgentFactory : IAgentRuntimeFactory, IDisposable
         IOptions<SkillsOptions> skillsOptions,
         IHostEnvironment hostEnvironment,
         IOrbitScenarioService orbitScenarioService,
+        ISceneStyleValidator styleValidator,
         AstroxRawTools rawTools,
         ILoggerFactory loggerFactory)
     {
@@ -33,6 +35,7 @@ public sealed class AgentFactory : IAgentRuntimeFactory, IDisposable
         _agentOptions = agentOptions.Value;
         _orbitScenarioService = orbitScenarioService
             ?? throw new ArgumentNullException(nameof(orbitScenarioService));
+        _styleValidator = styleValidator ?? throw new ArgumentNullException(nameof(styleValidator));
         _rawTools = rawTools ?? throw new ArgumentNullException(nameof(rawTools));
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
 
@@ -54,13 +57,26 @@ public sealed class AgentFactory : IAgentRuntimeFactory, IDisposable
         }
 
         var sceneOpSink = new TurnSceneOpSink();
-        var sceneTools = new SceneTools(sceneOpSink, _orbitScenarioService);
+        var sceneTools = new SceneTools(
+            sceneOpSink,
+            _orbitScenarioService,
+            styleValidator: _styleValidator);
         List<AITool> tools =
         [
             AIFunctionFactory.Create(sceneTools.ClearScene),
             AIFunctionFactory.Create(sceneTools.UpsertFacility),
             AIFunctionFactory.Create(sceneTools.DeleteEntity),
             AIFunctionFactory.Create(sceneTools.AddSatelliteJ2),
+            AIFunctionFactory.Create(sceneTools.FocusEntity),
+            AIFunctionFactory.Create(sceneTools.TrackEntity),
+            AIFunctionFactory.Create(sceneTools.StopTracking),
+            AIFunctionFactory.Create(sceneTools.AdjustCamera),
+            AIFunctionFactory.Create(sceneTools.OrbitEntity),
+            AIFunctionFactory.Create(sceneTools.StopOrbit),
+            AIFunctionFactory.Create(sceneTools.UpdateEntityStyle),
+            AIFunctionFactory.Create(sceneTools.PropagateAndAddSatellite),
+            AIFunctionFactory.Create(sceneTools.AddSatelliteFromPositions),
+            AIFunctionFactory.Create(sceneTools.PropagateIssAndAddSatellite),
             AIFunctionFactory.Create(_rawTools.HttpGet),
             AIFunctionFactory.Create(_rawTools.HttpPost)
         ];

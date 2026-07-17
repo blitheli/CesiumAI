@@ -1,6 +1,6 @@
 # CesiumAI
 
-CesiumAI 是一个 React + Cesium 前端与 ASP.NET Core 后端组成的 MVP。用户通过自然语言清空场景、增改地面站，或调用 Astrox 生成 900 km SSO 卫星的一天 J2 星历。后端 C# Tools 生成结构化 `sceneOps`；前端不会从助手文本中提取 CZML。
+CesiumAI 是一个 React + Cesium 前端与 ASP.NET Core 后端组成的应用。用户通过自然语言清空场景、增改地面站、控制相机、修改实体样式，或通过 skill 驱动的通用传播器建星（含 ISS/SGP4 默认流程与保留的 J2 快捷路径）。后端 C# Tools 生成结构化 `sceneOps`；前端不会从助手文本中提取 CZML。
 
 ## 前置条件
 
@@ -193,12 +193,49 @@ npm run e2e
 npm run lint
 ```
 
-`npm run e2e` 会自行启动 `http://127.0.0.1:5173` 上的 Vite，并拦截 `POST /api/chat`。四个 Playwright 场景使用确定性响应，不访问 live LLM 或 Astrox；它们覆盖清空、添加地面站、更新地面站和添加 SSO/J2 卫星，同时直接检查实际 `CzmlDataSource` 的 position/point/path、Viewer availability 时钟与推进后的位置变化，并验证 `sceneSummary`、命名实体的 `relevantPackets`、持续存在的 Cesium canvas 和浏览器 console error。
+`npm run e2e` 会自行启动 `http://127.0.0.1:5173` 上的 Vite，并拦截 `POST /api/chat`。Playwright 场景使用确定性响应，不访问 live LLM 或 Astrox；覆盖清空、添加/更新地面站、SSO/J2 卫星，以及相机定位/跟随/相对微调/单次与持续环绕/停止、ISS 样式修改后 Position 保留。验收通过**测试专用**只读 diagnostics（`VITE_ENABLE_TEST_DIAGNOSTICS=true`，由 Playwright `webServer` 注入；含 `data-scene-diagnostics` 与 `window.__CESIUM_AI_READ_DIAGNOSTICS__`）观测 tracked entity、orbit 状态、相机 heading/位置与样式，不绕过真实相机控制器。正常 `npm run build` / 生产构建不得设置该变量，因此不会暴露 diagnostics UI 或 window 全局。同时检查 Cesium canvas 持久存在且无 console error。
 
 首次运行或 Playwright 升级后，如 Chromium 尚未安装：
 
 ```bash
 cd frontend && npx playwright install chromium
+```
+
+## 自然语言能力与默认策略
+
+### 相机
+
+支持定位、跟随/停止跟随、相对缩放/平移/旋转、单次环绕与持续环绕/停止。相对旋转的 `headingDegrees`：**正为右转，负为左转**。示例：
+
+```text
+定位到地面站
+跟随国际空间站
+再拉近一点并向左转
+绕国际空间站转一点
+停止跟随并持续环绕
+停止环绕
+```
+
+### 通用轨道传播
+
+非 `AddSatelliteJ2` 快捷场景时，Agent 先加载对应 Astrox skill，再调用 `PropagateAndAddSatellite`。后端直接消费 Astrox 返回的标准 CZML `Position` 并写入 `upsert`；不得让大型 positions 在工具结果与模型参数间往返。也可用 `AddSatelliteFromPositions` 接入已有可信 Position。`AddSatelliteJ2` 仍保留以兼容现有调用。
+
+### 国际空间站默认
+
+用户仅说“添加国际空间站”时：
+
+1. 先加载 SGP4/TLE 相关 skill
+2. 使用受限 `HttpGet` 查询 NORAD Catalog Number `25544` 的最新 TLE
+3. 调用专用 Tool `PropagateIssAndAddSatellite`（由 skill/TLE 构造 requestJson；服务端注入 `/Propagator/SGP4` 的 Start/Stop/Step，默认当前 UTC 截断到分钟起、未来 24 小时、步长 60 秒）
+
+若 TLE 查询失败、结果不唯一或响应缺少两行根数，则禁止传播且不产生 `sceneOps`。用户明确指定时长或步长时可覆盖对应默认值。
+
+### 实体样式
+
+可通过自然语言修改已有实体的视觉属性；白名单顶层字段为 `point`、`path`、`label`、`billboard`、`model`、`polyline`、`polygon`、`ellipse`。禁止修改 `id`、`position`、`availability`、`properties` 或 `document`。示例：
+
+```text
+把国际空间站改成红色，轨迹宽度 5
 ```
 
 ## 手工验收 / 可选 live smoke
@@ -210,6 +247,12 @@ cd frontend && npx playwright install chromium
 添加一个地面站，经纬高是 -100, 30.2, 10
 把该地面站高度改为 50 米
 添加一个 900km SSO 卫星，使用 J2 递推一天
+添加国际空间站
+定位到地面站
+跟随国际空间站
+停止跟随并持续环绕
+停止环绕
+把国际空间站改成红色，轨迹宽度 5
 ```
 
 确认 API 返回 typed `sceneOps`、助手文本只用于展示、前端不从文本提取 CZML，并且卫星轨迹随 Cesium 时钟动画显示。缺少凭据或 Astrox 不可达时，跳过 live smoke；自动化测试不需要这些外部服务。
