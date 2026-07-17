@@ -89,6 +89,33 @@ Shell 环境中的 key 只用于当前进程；不要把包含 key 的 shell 文
 
 ## 运行
 
+### 一键启动（推荐）
+
+先确保前端依赖已安装（见上文「安装」），再在仓库根目录安装根脚本依赖并启动：
+
+```bash
+npm install
+npm run dev
+```
+
+该命令会同时启动：
+
+- 后端 API：`http://localhost:5088`
+- 前端 Vite：`http://localhost:5173`（自动设置 `VITE_API_BASE_URL=http://localhost:5088`）
+
+打开 `http://localhost:5173`。按 `Ctrl+C` 会同时停止前后端。
+
+`Agent:ApiKey` 仍通过 User Secrets 或环境变量 `Agent__ApiKey` 提供，不要写入 `package.json`。仅访问 `/healthz` 时可用占位 key 启动；真实对话需要有效 key。
+
+单独启动：
+
+```bash
+npm run dev:api
+npm run dev:web
+```
+
+### 分终端启动
+
 终端 1：
 
 ```bash
