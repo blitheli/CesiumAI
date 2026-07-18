@@ -158,6 +158,12 @@ public sealed class OrbitScenarioService : IOrbitScenarioService
                     }
                 }
             },
+            model = new
+            {
+                gltf = "/models/satellite.glb",
+                minimumPixelSize = 64,
+                maximumScale = 20000
+            },
             properties = new
             {
                 orbitHint = new

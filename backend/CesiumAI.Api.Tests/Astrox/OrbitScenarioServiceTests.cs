@@ -77,7 +77,7 @@ public class OrbitScenarioServiceTests
         JsonElement root = packet;
 
         root.EnumerateObject().Select(property => property.Name).Should().BeEquivalentTo(
-            ["id", "name", "availability", "position", "point", "path", "properties"]);
+            ["id", "name", "availability", "position", "point", "path", "model", "properties"]);
         root.GetProperty("id").GetString().Should().Be("sso-900");
         root.GetProperty("name").GetString().Should().Be("SSO 900 km");
         root.GetProperty("availability").GetString().Should().Be("2026-07-16T00:00:00.000Z/2026-07-17T00:00:00.000Z");
@@ -104,6 +104,11 @@ public class OrbitScenarioServiceTests
             .Select(value => value.GetInt32())
             .Should()
             .Equal([0, 200, 255, 220]);
+
+        JsonElement model = root.GetProperty("model");
+        model.GetProperty("gltf").GetString().Should().Be("/models/satellite.glb");
+        model.GetProperty("minimumPixelSize").GetInt32().Should().Be(64);
+        model.GetProperty("maximumScale").GetInt32().Should().Be(20000);
 
         root.GetProperty("properties").GetProperty("orbitHint").GetProperty("string").GetString().Should().Be("900 km SSO / J2");
     }
@@ -279,7 +284,7 @@ public class OrbitScenarioServiceTests
         requestedPaths.Should().Equal("/Propagator/TwoBody");
         capturedBody.Should().Be(requestJson);
         packet.EnumerateObject().Select(property => property.Name).Should().BeEquivalentTo(
-            ["id", "name", "availability", "position", "point", "path", "properties"]);
+            ["id", "name", "availability", "position", "point", "path", "model", "properties"]);
         packet.GetProperty("id").GetString().Should().Be("sat-twobody");
         packet.GetProperty("name").GetString().Should().Be("TwoBody Sat");
         packet.GetProperty("availability").GetString()
@@ -291,6 +296,9 @@ public class OrbitScenarioServiceTests
             .Equal([0, 1, 2, 3, 60, 4, 5, 6]);
         packet.GetProperty("point").GetProperty("pixelSize").GetInt32().Should().Be(8);
         packet.GetProperty("path").GetProperty("trailTime").GetInt32().Should().Be(3600);
+        packet.GetProperty("model").GetProperty("gltf").GetString().Should().Be("/models/satellite.glb");
+        packet.GetProperty("model").GetProperty("minimumPixelSize").GetInt32().Should().Be(64);
+        packet.GetProperty("model").GetProperty("maximumScale").GetInt32().Should().Be(20000);
         packet.GetProperty("properties").GetProperty("orbitHint").GetProperty("string")
             .GetString().Should().Be("TwoBody demo");
     }
@@ -321,6 +329,9 @@ public class OrbitScenarioServiceTests
         packet.GetProperty("availability").GetString()
             .Should().Be("2026-07-16T00:00:00.000Z/2026-07-16T00:30:00.000Z");
         packet.GetProperty("path").GetProperty("trailTime").GetInt32().Should().Be(1800);
+        packet.GetProperty("model").GetProperty("gltf").GetString().Should().Be("/models/satellite.glb");
+        packet.GetProperty("model").GetProperty("minimumPixelSize").GetInt32().Should().Be(64);
+        packet.GetProperty("model").GetProperty("maximumScale").GetInt32().Should().Be(20000);
         packet.GetProperty("properties").GetProperty("orbitHint").GetProperty("string")
             .GetString().Should().Be("external positions");
         packet.GetProperty("position").GetProperty("cartesianVelocity")

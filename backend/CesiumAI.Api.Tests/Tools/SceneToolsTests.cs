@@ -38,7 +38,7 @@ public class SceneToolsTests
         JsonElement packet = operation.Packets.Single();
 
         packet.EnumerateObject().Select(property => property.Name).Should().BeEquivalentTo(
-            ["id", "name", "position", "point", "label"]);
+            ["id", "name", "position", "point", "label", "model"]);
         packet.GetProperty("id").GetString().Should().Be("sanya");
         packet.GetProperty("name").GetString().Should().Be("三亚");
         packet.GetProperty("position").GetProperty("cartographicDegrees")
@@ -57,6 +57,11 @@ public class SceneToolsTests
         label.GetProperty("text").GetString().Should().Be("三亚");
         label.GetProperty("show").GetBoolean().Should().BeTrue();
         label.GetProperty("pixelOffset").GetProperty("cartesian2").EnumerateArray().Select(value => value.GetInt32()).Should().Equal([0, -18]);
+
+        JsonElement model = packet.GetProperty("model");
+        model.GetProperty("gltf").GetString().Should().Be("/models/facility.glb");
+        model.GetProperty("minimumPixelSize").GetInt32().Should().Be(64);
+        model.GetProperty("maximumScale").GetInt32().Should().Be(20000);
     }
 
     [Theory]

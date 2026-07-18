@@ -77,6 +77,12 @@ public sealed class SceneTools(
                 {
                     cartesian2 = new[] { 0, -18 }
                 }
+            },
+            model = new
+            {
+                gltf = "/models/facility.glb",
+                minimumPixelSize = 64,
+                maximumScale = 20000
             }
         });
 
