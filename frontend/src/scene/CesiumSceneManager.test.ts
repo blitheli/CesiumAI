@@ -7,7 +7,10 @@ import {
   type ViewerClockSnapshot,
 } from "./CesiumSceneManager";
 
+// 生产 port 依赖真实 Cesium；此处用 vi.hoisted 构造可跨 mock 边界共享的假对象，
+// 供「生产 port」类用例断言 load/attach/时钟同步行为。
 const cesiumFakes = vi.hoisted(() => {
+  // 每次 new FakeCzmlDataSource 都会 push 进来，用例通过 dataSources[0] 取到当前实例。
   const dataSources: Array<{
     load: ReturnType<typeof vi.fn>;
     process: ReturnType<typeof vi.fn>;
@@ -21,6 +24,7 @@ const cesiumFakes = vi.hoisted(() => {
     };
   }> = [];
 
+  // 最小 CzmlDataSource 替身：load/process/removeById 可断言；clock 可手写脏数据验证不被误用。
   class FakeCzmlDataSource {
     load = vi.fn(async () => this);
     process = vi.fn(async () => this);
@@ -43,17 +47,21 @@ const cesiumFakes = vi.hoisted(() => {
   return {
     dataSources,
     FakeCzmlDataSource,
+    // JulianDate 替身：用 { value: iso } 代替真实 JulianDate，便于字符串比较与 clone 断言。
     clone: vi.fn((value: { value: string }) => ({ ...value })),
     fromIso8601: vi.fn((value: string) => ({ value })),
   };
 });
 
+// 替换 cesium 模块，使生产 port 路径不拉真实 WebGL / Cesium 运行时。
 vi.mock("cesium", () => ({
+  // LOOP_STOP：同步时钟时期望写入的 clockRange 常量。
   ClockRange: { LOOP_STOP: 2 },
   CzmlDataSource: cesiumFakes.FakeCzmlDataSource,
   JulianDate: {
     clone: cesiumFakes.clone,
     fromIso8601: cesiumFakes.fromIso8601,
+    // 按 ISO 字符串字典序比较，足以覆盖 clamp/区间判断用例。
     greaterThan: vi.fn(
       (left: { value: string }, right: { value: string }) =>
         left.value > right.value,
@@ -65,6 +73,7 @@ vi.mock("cesium", () => ({
   },
 }));
 
+// 构造带固定 clock 的空场景 document（仅 document packet），作 initialize / clear 的权威基线。
 function createEmpty(): CzmlPacket[] {
   return [
     {
@@ -79,12 +88,14 @@ function createEmpty(): CzmlPacket[] {
   ];
 }
 
+// 注入用 CzmlDataSourcePort：默认全部成功；overrides 可替换个别方法模拟失败或挂起。
 function createPort(overrides: Partial<CzmlDataSourcePort> = {}): CzmlDataSourcePort {
   return {
     load: vi.fn(async () => undefined),
     process: vi.fn(async () => undefined),
     removeById: vi.fn(() => true),
     syncViewerClock: vi.fn(),
+    // 占位快照；用例只关心是否调用 restore，不解析真实 Viewer.clock 字段。
     snapshotViewerClock: vi.fn(
       () => ({ marker: "snapshot" }) as unknown as ViewerClockSnapshot,
     ),
@@ -94,12 +105,14 @@ function createPort(overrides: Partial<CzmlDataSourcePort> = {}): CzmlDataSource
   };
 }
 
+// 清掉跨用例残留的 FakeCzmlDataSource 实例与 JulianDate mock 调用记录。
 beforeEach(() => {
   cesiumFakes.dataSources.length = 0;
   cesiumFakes.clone.mockClear();
   cesiumFakes.fromIso8601.mockClear();
 });
 
+// 初始化时只 load 一次空 document，不多不少。
 it("loads the empty document exactly once during initialization", async () => {
   const port = createPort();
   const manager = new CesiumSceneManager(createEmpty, port);
@@ -110,6 +123,7 @@ it("loads the empty document exactly once during initialization", async () => {
   expect(port.load).toHaveBeenCalledWith(createEmpty());
 });
 
+// 首批 apply 须等 initialize 完成后再执行 process。
 it("waits for initialization before applying the first operation", async () => {
   let finishLoading: (() => void) | undefined;
   const loading = new Promise<void>((resolve) => {
@@ -134,6 +148,7 @@ it("waits for initialization before applying the first operation", async () => {
   expect(port.process).toHaveBeenCalledOnce();
 });
 
+// clear / upsert / delete 按操作数组顺序经 port 生效（含 upsert 先 remove 再 process）。
 it("routes clear, upsert, and delete through the port in operation order", async () => {
   const calls: string[] = [];
   const port = createPort({
@@ -173,6 +188,7 @@ it("routes clear, upsert, and delete through the port in operation order", async
   expect(port.load).toHaveBeenLastCalledWith(createEmpty());
 });
 
+// 混合 upsert 会过滤掉 document packet，只 process 业务实体。
 it("filters document packets before processing a mixed upsert", async () => {
   const port = createPort();
   const manager = new CesiumSceneManager(createEmpty, port);
@@ -196,6 +212,7 @@ it("filters document packets before processing a mixed upsert", async () => {
   ]);
 });
 
+// 仅含 document 的 upsert 不调用 process，也不改权威 document。
 it("does not process an upsert containing only document packets", async () => {
   const port = createPort();
   const manager = new CesiumSceneManager(createEmpty, port);
@@ -213,6 +230,7 @@ it("does not process an upsert containing only document packets", async () => {
   expect(manager.pickRelevantPackets(["document"])).toEqual(createEmpty());
 });
 
+// 同 id 类型变更（卫星→设施）时，先 remove 再 process。
 it("removes an existing satellite before replacing it with a facility", async () => {
   const port = createPort();
   const manager = new CesiumSceneManager(createEmpty, port);
@@ -242,6 +260,7 @@ it("removes an existing satellite before replacing it with a facility", async ()
   ]);
 });
 
+// 整包替换前先 remove，确保省略属性在 Cesium 中被删除。
 it("removes the old entity so omitted properties are deleted in Cesium", async () => {
   const calls: string[] = [];
   const port = createPort({
@@ -273,6 +292,7 @@ it("removes the old entity so omitted properties are deleted in Cesium", async (
   ]);
 });
 
+// 替换 process 失败时 load 回滚到先前 document，权威状态不变。
 it("reloads the prior document when replacement processing fails", async () => {
   const failure = new Error("replacement rejected");
   const port = createPort({
@@ -306,6 +326,7 @@ it("reloads the prior document when replacement processing fails", async () => {
   expect(manager.pickRelevantPackets(["shared"])).toEqual([priorPacket]);
 });
 
+// 卫星 availability 驱动权威 document.clock，并 syncViewerClock。
 it("derives the authoritative document and viewer clock from satellite availability", async () => {
   const port = createPort();
   const manager = new CesiumSceneManager(createEmpty, port);
@@ -330,6 +351,7 @@ it("derives the authoritative document and viewer clock from satellite availabil
   });
 });
 
+// 仅当 availability 区间变化时才重置 Viewer 时钟；同区间 upsert 不 sync。
 it("resets the viewer clock only when an upsert changes the availability interval", async () => {
   const port = createPort();
   const manager = new CesiumSceneManager(createEmpty, port);
@@ -370,6 +392,7 @@ it("resets the viewer clock only when an upsert changes the availability interva
   });
 });
 
+// 失败 upsert 回滚过程中不得 syncViewerClock（避免打乱用户时钟）。
 it("does not reset the viewer clock while rolling back a failed entity upsert", async () => {
   const failure = new Error("facility rejected");
   const port = createPort({
@@ -403,6 +426,7 @@ it("does not reset the viewer clock while rolling back a failed entity upsert", 
   expect(port.syncViewerClock).not.toHaveBeenCalled();
 });
 
+// upsert 须在 process 与 clock sync 都成功后才提交到权威 document。
 it("commits an upsert only after Cesium processing and clock sync succeed", async () => {
   let resolveProcess: (() => void) | undefined;
   const processPending = new Promise<void>((resolve) => {
@@ -443,6 +467,7 @@ it("commits an upsert only after Cesium processing and clock sync succeed", asyn
   ]);
 });
 
+// 某操作被拒后停止后续 ops，该次 document 变更不提交。
 it("stops at a rejected operation and leaves its document change uncommitted", async () => {
   const failure = new Error("CZML rejected");
   const port = createPort({
@@ -467,6 +492,7 @@ it("stops at a rejected operation and leaves its document change uncommitted", a
   expect(manager.pickRelevantPackets(["invalid"])).toEqual([]);
 });
 
+// 同一批中先成功的操作已提交；后续失败不影响已提交状态。
 it("commits successful operations before a later operation rejects", async () => {
   const failure = new Error("second packet rejected");
   const port = createPort({
@@ -494,6 +520,7 @@ it("commits successful operations before a later operation rejects", async () =>
   expect(port.removeById).toHaveBeenNthCalledWith(2, "rejected");
 });
 
+// 并发 apply 串行化，后到的调用基于前一次已提交状态。
 it("serializes concurrent apply calls so later work uses committed state", async () => {
   let finishFirstProcess: (() => void) | undefined;
   const firstProcess = new Promise<void>((resolve) => {
@@ -539,6 +566,7 @@ it("serializes concurrent apply calls so later work uses committed state", async
   ]);
 });
 
+// 队列中前一次 apply 失败后，后续排队的 apply 仍能继续执行。
 it("continues queued apply calls after an earlier call rejects", async () => {
   const failure = new Error("first apply failed");
   let rejectFirstProcess: ((reason: Error) => void) | undefined;
@@ -579,6 +607,7 @@ it("continues queued apply calls after an earlier call rejects", async () => {
   ]);
 });
 
+// summary / packet / selection 返回值与内部状态隔离（深拷贝，外部改不动）。
 it("returns detached summary, packet, and selection values", async () => {
   const manager = new CesiumSceneManager(createEmpty, createPort());
   await manager.initialize();
@@ -599,6 +628,7 @@ it("returns detached summary, packet, and selection values", async () => {
   expect(manager.buildSummary().entities[0]?.name).toBe("Sanya");
 });
 
+// 生产 port：先 load 再 attach；按显式 availability 同步 Viewer 时钟，不采 dataSource.clock。
 it("production port loads before attaching and syncs the explicit availability clock", async () => {
   const viewer = {
     dataSources: {
@@ -658,6 +688,7 @@ it("production port loads before attaching and syncs the explicit availability c
   );
 });
 
+// 生产 port：设施或同区间 upsert 时保留用户已推进且暂停的时钟，不 zoomTo。
 it("production port preserves an advanced paused clock for facility and same-interval upserts", async () => {
   const viewer = {
     dataSources: {
@@ -703,6 +734,7 @@ it("production port preserves an advanced paused clock for facility and same-int
   expect(viewer.timeline.zoomTo).not.toHaveBeenCalled();
 });
 
+// 生产 port：实体 upsert 失败后精确恢复操作前的 Viewer 时钟快照。
 it("production port restores the exact Viewer clock snapshot after a failed entity upsert", async () => {
   const viewer = {
     dataSources: {
@@ -753,6 +785,7 @@ it("production port restores the exact Viewer clock snapshot after a failed enti
   expect(viewer.clock).toEqual(snapshot);
 });
 
+// initialize 须等 dataSources.add 完成；attach 前不得提交 document 或 process。
 it("waits for the data source attachment before completing initialization", async () => {
   let finishAttaching: (() => void) | undefined;
   const attaching = new Promise<void>((resolve) => {
@@ -789,6 +822,7 @@ it("waits for the data source attachment before completing initialization", asyn
   ]);
 });
 
+// attach 失败时 initialize 不提交；允许重试并最终成功。
 it("keeps initialization uncommitted after attachment failure and allows retry", async () => {
   const failure = new Error("viewer rejected data source");
   const viewer = {
@@ -816,6 +850,7 @@ it("keeps initialization uncommitted after attachment failure and allows retry",
   expect(manager.pickRelevantPackets(["document"])).toEqual(createEmpty());
 });
 
+// style 以完整 packet process（先 remove）；动态 position 等语义字段保持不变。
 it("applies style via complete packet process while preserving dynamic position", async () => {
   const port = createPort();
   const manager = new CesiumSceneManager(createEmpty, port);
@@ -868,6 +903,7 @@ it("applies style via complete packet process while preserving dynamic position"
   ]);
 });
 
+// style process 失败时 load 回滚 Cesium，权威 document 不变。
 it("rolls back Cesium and leaves document unchanged when style processing fails", async () => {
   const failure = new Error("style rejected");
   const port = createPort({
@@ -897,6 +933,7 @@ it("rolls back Cesium and leaves document unchanged when style processing fails"
   expect(manager.pickRelevantPackets(["iss"])).toEqual([priorPacket]);
 });
 
+// 对不存在实体的 style 在改 Cesium 前即拒绝。
 it("rejects style for missing entities before touching Cesium", async () => {
   const port = createPort();
   const manager = new CesiumSceneManager(createEmpty, port);
@@ -912,6 +949,7 @@ it("rejects style for missing entities before touching Cesium", async () => {
   expect(port.process).not.toHaveBeenCalled();
 });
 
+// camera op 按序 await；相机失败后停止后续 style 等操作。
 it("按序 await 相机控制器，失败时停止后续操作", async () => {
   const port = createPort();
   const cameraController = {
@@ -969,6 +1007,7 @@ it("按序 await 相机控制器，失败时停止后续操作", async () => {
   ]);
 });
 
+// 相机 flyTo/focus 失败时停止后续 ops，已成功的 upsert 已提交。
 it("相机 flyTo 失败时 SceneManager 停止后续操作", async () => {
   const port = createPort();
   const cameraController = {
@@ -1018,6 +1057,7 @@ it("相机 flyTo 失败时 SceneManager 停止后续操作", async () => {
   ]);
 });
 
+// delete 调 onEntitiesDeleted；clear 调 onSceneCleared；destroy 调相机 destroy。
 it("clear/delete/destroy 时通知相机控制器清理", async () => {
   const port = createPort();
   const cameraController = {
@@ -1060,6 +1100,7 @@ it("clear/delete/destroy 时通知相机控制器清理", async () => {
   expect(cameraController.destroy).toHaveBeenCalledOnce();
 });
 
+// clear 须先 load 成功并提交空 document，再清相机；load 失败则保留 track/orbit。
 it("clear 先成功 load/提交 document 再清相机；load 失败保留 track/orbit", async () => {
   const load = vi
     .fn()
@@ -1115,6 +1156,7 @@ it("clear 先成功 load/提交 document 再清相机；load 失败保留 track/
   expect(clearOrder).toBeGreaterThan(loadOrder);
 });
 
+// 实体替换走 beginEntityReplacement：成功 commit；失败则 rollback load 后按跟踪目标 rebind。
 it("upsert/style 替换实体时通过事务 hook 在成功后重绑、失败 rollback 后重绑", async () => {
   const port = createPort();
   const commit = vi.fn();
@@ -1172,6 +1214,7 @@ it("upsert/style 替换实体时通过事务 hook 在成功后重绑、失败 ro
   expect(rebindAfterReload).toHaveBeenCalledWith("iss");
 });
 
+// 跟踪 B 时更新 A 失败：load 回滚后仍无条件 rebind 到 B（非被替换实体）。
 it("跟踪 B 时更新 A 失败：load 回滚后仍按 B 无条件重绑", async () => {
   const port = createPort();
   const commit = vi.fn();
@@ -1263,6 +1306,7 @@ function createCameraStub(trackedId: string | null = "iss") {
   };
 }
 
+// upsert 回滚：load 成功后 restore 抛错仍须 rebind，错误以 AggregateError 汇总。
 it("upsert：load 成功后 restoreViewerClock 抛错仍调用 rebind，并以 AggregateError 失败", async () => {
   const processError = new Error("upsert process failed");
   const restoreError = new Error("restore clock failed");
@@ -1303,6 +1347,7 @@ it("upsert：load 成功后 restoreViewerClock 抛错仍调用 rebind，并以 A
   expect(aggregate.errors).toEqual([processError, restoreError]);
 });
 
+// style 回滚：restore 与 rebind 均失败时 AggregateError 保留全部错误。
 it("style：load 成功后 restore 与 rebind 均失败时 AggregateError 保留全部错误", async () => {
   const processError = new Error("style process failed");
   const restoreError = new Error("restore clock failed");

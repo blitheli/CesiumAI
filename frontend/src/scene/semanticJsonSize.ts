@@ -1,4 +1,4 @@
-/** 前后端一致的语义 JSON 大小预算上限（32KiB）。 */
+/** 前后端一致的语义 JSON 大小预算上限（32KiB）。（例如 style patch），防止超大补丁。 */
 export const MAX_SEMANTIC_JSON_BYTES = 32 * 1024;
 
 /** 任意有限 double 最坏十进制/科学计数表示的固定预算。 */
@@ -11,7 +11,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * 计量与 JSON 文本表示无关的语义大小（与后端 SemanticJsonSize 对齐）：
+ * 计量与 JSON 文本表示无关的语义大小,用来估算一段 JSON 值「有多胖」,避免超大补丁（与后端 SemanticJsonSize 对齐）：
  * - 对象：braces + commas + JSON-escaped UTF-8 key + colon + value
  * - 数组：brackets + commas + value
  * - 字符串/键：浏览器 JSON.stringify 后的 UTF-8（含 U+2028/U+2029 字面量）

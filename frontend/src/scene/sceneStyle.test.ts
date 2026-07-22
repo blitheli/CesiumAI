@@ -5,6 +5,7 @@ import {
 } from "./semanticJsonSize";
 import { applyStylePatch } from "./sceneStyle";
 
+/** 含轨道数据与视觉字段的基准实体，用于验证合并时非视觉字段不被改动。 */
 const basePacket: CzmlPacket = {
   id: "iss",
   name: "ISS",
@@ -19,6 +20,7 @@ const basePacket: CzmlPacket = {
   label: { text: "ISS" },
 };
 
+// 允许的视觉字段深合并；position / availability / id 等非视觉数据必须原样保留。
 it("deep-merges allowed visual fields while preserving non-visual packet data", () => {
   const result = applyStylePatch(basePacket, {
     path: { width: 5, material: { solidColor: { color: { rgba: [255, 0, 0, 255] } } } },
@@ -42,6 +44,7 @@ it("deep-merges allowed visual fields while preserving non-visual packet data", 
   expect(result.label).toEqual({ text: "ISS" });
 });
 
+// 数组（如 rgba）整段替换，不按下标逐元素合并。
 it("replaces arrays wholesale instead of merging by index", () => {
   const result = applyStylePatch(basePacket, {
     point: { color: { rgba: [1, 2, 3, 4] } },
@@ -53,6 +56,7 @@ it("replaces arrays wholesale instead of merging by index", () => {
   });
 });
 
+// patch 值为 null：顶层删除整个容器，嵌套删除子键；非视觉字段不受影响。
 it("deletes allowed visual fields when patch values are null", () => {
   const result = applyStylePatch(basePacket, {
     label: null,
@@ -67,12 +71,14 @@ it("deletes allowed visual fields when patch values are null", () => {
   expect(result.position).toEqual(basePacket.position);
 });
 
+// 返回新 packet，不得原地修改入参。
 it("does not mutate the original packet", () => {
   const original = structuredClone(basePacket);
   applyStylePatch(basePacket, { path: { width: 9 } });
   expect(basePacket).toEqual(original);
 });
 
+// 顶层禁止 id / position / availability / properties 及未知键。
 it.each(["id", "position", "availability", "properties", "unknown"] as const)(
   "rejects forbidden or unknown top-level key %s",
   (key) => {
@@ -80,6 +86,7 @@ it.each(["id", "position", "availability", "properties", "unknown"] as const)(
   },
 );
 
+// rgba 必须是长度 4、分量 0..255 的整数；长度/范围/小数均应拒绝。
 it.each([
   "[255,0,0]",
   "[255,0,0,255,1]",
@@ -95,6 +102,7 @@ it.each([
   expect(() => applyStylePatch(basePacket, patch)).toThrow();
 });
 
+// width / pixelSize / outlineWidth / scale 等不得为负数。
 it.each([
   { path: { width: -1 } },
   { point: { pixelSize: -0.5 } },
@@ -104,6 +112,7 @@ it.each([
   expect(() => applyStylePatch(basePacket, patch)).toThrow();
 });
 
+// Infinity / NaN 不是有限数，必须拒绝。
 it("rejects non-finite numbers", () => {
   expect(() =>
     applyStylePatch(basePacket, { path: { width: Number.POSITIVE_INFINITY } }),
@@ -113,6 +122,7 @@ it("rejects non-finite numbers", () => {
   ).toThrow();
 });
 
+// 超过 32 KiB 语义 JSON 预算的超大字符串应拒绝。
 it("rejects payloads larger than the 32 KiB semantic JSON budget", () => {
   const largeText = "a".repeat(33 * 1024);
   expect(() =>
@@ -120,6 +130,7 @@ it("rejects payloads larger than the 32 KiB semantic JSON budget", () => {
   ).toThrow(/语义|32/);
 });
 
+// 大量科学计数数字：raw JSON 虽短，语义体积按 number 计费会超预算（与后端一致）。
 it("rejects 4096 scientific numbers by semantic budget (same as backend)", () => {
   // raw `1e20` 很短，JSON.stringify 可能膨胀；语义预算对每个 number 固定计 24。
   const cartesian = Array.from({ length: 4096 }, () => 1e20);
@@ -128,12 +139,14 @@ it("rejects 4096 scientific numbers by semantic budget (same as backend)", () =>
   expect(() => applyStylePatch(basePacket, patch)).toThrow(/语义/);
 });
 
+// 小体积合法 patch 应在预算内且顺利通过。
 it("accepts a small boundary object under the semantic budget", () => {
   const patch = { path: { width: 5 }, point: { pixelSize: 1 } };
   expect(measureSemanticJsonSize(patch)).toBeLessThan(MAX_SEMANTIC_JSON_BYTES);
   expect(() => applyStylePatch(basePacket, patch)).not.toThrow();
 });
 
+// 恰好顶满 32 KiB 语义预算时应接受。
 it("accepts a patch at the exact 32 KiB semantic budget limit", () => {
   // {"label":{"text":...}} 语义开销 21
   const text = "x".repeat(MAX_SEMANTIC_JSON_BYTES - 21);
@@ -142,6 +155,7 @@ it("accepts a patch at the exact 32 KiB semantic budget limit", () => {
   expect(() => applyStylePatch(basePacket, patch)).not.toThrow();
 });
 
+// 比预算多 1 字节必须拒绝。
 it("rejects a patch one byte over the semantic budget limit", () => {
   const text = "x".repeat(MAX_SEMANTIC_JSON_BYTES - 21 + 1);
   const patch = { label: { text } };
@@ -149,6 +163,7 @@ it("rejects a patch one byte over the semantic budget limit", () => {
   expect(() => applyStylePatch(basePacket, patch)).toThrow(/语义/);
 });
 
+// JSON 里的 1.0 解析后等同整数 1，应与后端「精确整数」语义一致并接受。
 it("accepts rgba components that are exact integers after JSON number parsing", () => {
   // JSON 1.0 解析后与 1 无法区分；Number.isInteger(1) === true，应与后端精确整数语义一致。
   const patch = JSON.parse(
@@ -160,6 +175,7 @@ it("accepts rgba components that are exact integers after JSON number parsing", 
   });
 });
 
+// 嵌套深度超过 12 层应拒绝。
 it("rejects nesting deeper than 12", () => {
   let nested: unknown = 1;
   for (let i = 0; i < 13; i++) {
@@ -168,6 +184,7 @@ it("rejects nesting deeper than 12", () => {
   expect(() => applyStylePatch(basePacket, { point: nested })).toThrow();
 });
 
+// 任意数组长度超过 4096 应拒绝。
 it("rejects arrays longer than 4096", () => {
   const cartesian = Array.from({ length: 4097 }, () => 1);
   expect(() =>
@@ -177,12 +194,14 @@ it("rejects arrays longer than 4096", () => {
   ).toThrow();
 });
 
+// patch 根必须是对象，数组根不合法。
 it("rejects a non-object patch root", () => {
   expect(() =>
     applyStylePatch(basePacket, [1, 2, 3] as unknown as Record<string, unknown>),
   ).toThrow();
 });
 
+// 白名单内全部顶层视觉键均可同时出现并成功合并。
 it("accepts all allowed top-level visual keys", () => {
   const result = applyStylePatch(
     { id: "entity" },
@@ -202,6 +221,7 @@ it("accepts all allowed top-level visual keys", () => {
   expect(result.ellipse).toEqual({ semiMajorAxis: 1 });
 });
 
+// billboard/model 内禁止非 null 的 image/gltf/uri/url（含嵌套路径），防注入外部资源。
 it.each([
   { billboard: { image: "https://evil.example/a.png" } },
   { billboard: { uri: "/local/icon.png" } },
@@ -215,6 +235,7 @@ it.each([
   expect(() => applyStylePatch(basePacket, patch)).toThrow();
 });
 
+// 外部资源键可用 null 删除；同时允许改 scale 等其它视觉字段。
 it("allows null external resource keys and other visual field updates", () => {
   const result = applyStylePatch(basePacket, {
     billboard: { image: null, scale: 2 },
