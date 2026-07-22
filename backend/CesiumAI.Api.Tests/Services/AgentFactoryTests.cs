@@ -51,11 +51,11 @@ public class AgentFactoryTests
     {
         string parent = Directory.CreateTempSubdirectory().FullName;
         string contentRoot = Directory.CreateDirectory(Path.Combine(parent, "api")).FullName;
-        Directory.CreateDirectory(Path.Combine(parent, "astrox-skills", "skills"));
+        Directory.CreateDirectory(Path.Combine(contentRoot, "skills"));
 
         try
         {
-            AgentFactory factory = CreateFactory(contentRoot, "../astrox-skills/skills");
+            AgentFactory factory = CreateFactory(contentRoot, "skills");
             AgentRuntime runtime = await factory.CreateAsync("session", CancellationToken.None);
 
             ChatClientAgent agent = runtime.Agent.Should().BeOfType<ChatClientAgent>().Subject;
@@ -129,11 +129,11 @@ public class AgentFactoryTests
     {
         string parent = Directory.CreateTempSubdirectory().FullName;
         string contentRoot = Directory.CreateDirectory(Path.Combine(parent, "api")).FullName;
-        Directory.CreateDirectory(Path.Combine(parent, "astrox-skills", "skills"));
+        Directory.CreateDirectory(Path.Combine(contentRoot, "skills"));
 
         try
         {
-            AgentFactory factory = CreateFactory(contentRoot, "../astrox-skills/skills");
+            AgentFactory factory = CreateFactory(contentRoot, "skills");
 
             AgentRuntime runtime = await factory.CreateAsync("session", CancellationToken.None);
 

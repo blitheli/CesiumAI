@@ -23,7 +23,7 @@ cd ..
 
 ### 安装 astrox-skills（Git submodule）
 
-`astrox-skills` 以 Git submodule 形式位于 `backend/astrox-skills`。Agent 从 `backend/astrox-skills/skills` 加载。
+`astrox-skills` 以 Git submodule 形式位于 `backend/astrox-skills`（仅作版本化来源）。构建时同步到 API content root 内的 `backend/CesiumAI.Api/skills/`；Agent 默认从该内部目录加载（`Skills:Path=skills`）。
 
 新 clone：
 
@@ -37,7 +37,7 @@ git clone --recurse-submodules <repo-url>
 git submodule update --init --recursive
 ```
 
-若本地仍残留手动复制的 `backend/skills/`，可删除；默认配置不再使用该路径。
+`backend/CesiumAI.Api/skills/` 由构建生成且已 gitignore，勿手改或提交。若本机 User Secrets 仍覆盖旧的 `Skills:Path`（如 `../astrox-skills/skills`），请删除该覆盖以免盖过默认值。
 
 ## 配置
 
@@ -50,16 +50,16 @@ dotnet user-secrets init --project backend/CesiumAI.Api
 dotnet user-secrets set "Agent:ApiKey" "<your-key>" --project backend/CesiumAI.Api
 ```
 
-仓库默认配置使用 `https://api.moonshot.cn/v1`、`kimi-k2.6`、`http://astrox.cn:8765` 和 `backend/astrox-skills/skills`。如需覆盖，可继续使用 User Secrets：
+仓库默认配置使用 `https://api.moonshot.cn/v1`、`kimi-k2.6`、`http://astrox.cn:8765` 和 content root 内的 `skills/`。如需覆盖，可继续使用 User Secrets：
 
 ```bash
 dotnet user-secrets set "Agent:Endpoint" "<openai-compatible-base-url>" --project backend/CesiumAI.Api
 dotnet user-secrets set "Agent:Model" "<model-name>" --project backend/CesiumAI.Api
 dotnet user-secrets set "Astrox:BaseUrl" "<astrox-base-url>" --project backend/CesiumAI.Api
-dotnet user-secrets set "Skills:Path" "../astrox-skills/skills" --project backend/CesiumAI.Api
+dotnet user-secrets set "Skills:Path" "skills" --project backend/CesiumAI.Api
 ```
 
-`Skills:Path` 必须是相对于 API content root（`backend/CesiumAI.Api`）的相对路径；默认 `../astrox-skills/skills` 指向 `backend/astrox-skills/skills`。
+`Skills:Path` 必须是相对于 API content root（`backend/CesiumAI.Api` 或发布目录）的相对路径；默认 `skills` 指向 content root 下的内部 `skills/` 文件夹。
 
 ### 环境变量替代方案
 
@@ -82,7 +82,8 @@ export Agent__ApiKey="<your-key>"
 export Agent__Endpoint="https://api.moonshot.cn/v1"
 export Agent__Model="kimi-k2.6"
 export Astrox__BaseUrl="http://astrox.cn:8765"
-export Skills__Path="../astrox-skills/skills"
+# 可选；默认已是 skills，一般无需设置
+# export Skills__Path="skills"
 export VITE_API_BASE_URL="http://localhost:5088"
 # 可选：Cesium ion token（geocoder/部分影像资源）；未设置时典型 widgets 仍可显示
 export VITE_CESIUM_ION_TOKEN="<your-cesium-ion-token>"
@@ -149,7 +150,68 @@ cd ..
 cp -R frontend/dist publish/frontend
 ```
 
-生产构建不设置 `VITE_API_BASE_URL`，浏览器将同源请求 `/api/chat`。推荐由 Nginx、Caddy 或等价网关托管 `publish/frontend`，将 SPA 回退到 `index.html`，并把 `/api/` 与 `/healthz` 反向代理到只在内网监听的 ASP.NET 进程。例如 Nginx：
+`dotnet publish` 会把 skills 同步到 `publish/api/skills/`（内部目录），无需再并列复制或设置 `Skills__Path`。
+
+### GitHub Actions 自动部署（阿里云 IIS）
+
+推送到 `main` 且对应路径有变更时自动部署：
+
+| Workflow | 触发路径 | 目标目录 |
+|----------|----------|----------|
+| `.github/workflows/deploy-frontend.yml` | `frontend/**` | `D:/IIS/ASTROX.CesiumAI.frontend` |
+| `.github/workflows/deploy-backend.yml` | `backend/**` | `D:/IIS/ASTROX.CesiumAI.backend`（含内部 `skills/`） |
+
+仓库需配置 Secrets：`ALIYUN_HOST`、`ALIYUN_USERNAME`、`ALIYUN_PASSWORD`。服务器需开启 OpenSSH Server。后端部署会停启 IIS 应用池 `CesiumAI.backend`。
+
+**不要把 Kimi / 模型 API Key 配到 GitHub Secrets。** Actions 只负责编译上传；Key 必须写在阿里云服务器本机环境变量中（见下一小节）。
+
+### 生产服务器配置 Agent__ApiKey（Windows / IIS）
+
+后端启动与真实对话依赖环境变量 `Agent__ApiKey`（对应配置项 `Agent:ApiKey`）。在阿里云 Windows 服务器上任选一种方式设置（推荐机器级，部署覆盖站点文件后仍生效）：
+
+**方式 A：系统环境变量（推荐，PowerShell 管理员）**
+
+```powershell
+[System.Environment]::SetEnvironmentVariable(
+  "Agent__ApiKey",
+  "<你的-kimi-api-key>",
+  "Machine")
+```
+
+设置后**回收或重启**应用池 `CesiumAI.backend`（或重启 IIS），进程才能读到新变量：
+
+```powershell
+C:\Windows\System32\inetsrv\appcmd.exe recycle apppool /apppool.name:"CesiumAI.backend"
+```
+
+**方式 B：IIS 站点环境变量（仅该站点）**
+
+1. 打开 IIS 管理器 → 选中后端站点（物理路径 `D:\IIS\ASTROX.CesiumAI.backend`）
+2. 打开「配置编辑器」→ 节路径选 `system.webServer/aspNetCore`
+3. 编辑 `environmentVariables`，新增：
+   - `name`：`Agent__ApiKey`
+   - `value`：你的 Kimi API Key
+4. 应用并回收应用池
+
+可选覆盖（一般不必改，仓库 `appsettings.json` 已有默认值）：
+
+| 环境变量 | 含义 | 默认 |
+|----------|------|------|
+| `Agent__ApiKey` | 模型 API Key（必填） | 无 |
+| `Agent__Endpoint` | OpenAI 兼容接口地址 | `https://api.moonshot.cn/v1` |
+| `Agent__Model` | 模型名 | `kimi-k2.6` |
+| `Astrox__BaseUrl` | Astrox WebAPI | `http://astrox.cn:8765` |
+| `Skills__Path` | skills 相对路径 | `skills`（站点内） |
+
+验证（应用池已启动后）：
+
+```powershell
+curl.exe --fail http://127.0.0.1:5088/healthz
+```
+
+应返回 `Healthy`。`/healthz` 只检查启动配置是否通过；真实对话才需要有效 Key。
+
+生产构建不设置 `VITE_API_BASE_URL`，浏览器将同源请求 `/api/chat`。推荐由 Nginx、Caddy、IIS 反代或等价网关托管 `publish/frontend`，将 SPA 回退到 `index.html`，并把 `/api/` 与 `/healthz` 反向代理到只在内网监听的 ASP.NET 进程。例如 Nginx：
 
 ```nginx
 location / {
@@ -181,21 +243,18 @@ export ReverseProxy__KnownProxies__0="10.0.0.12"
 
 不要加入不受控制的客户端网段或清空受信代理限制，否则客户端可伪造 scheme。Forwarded Headers Middleware 在 HTTPS redirect 前运行，因此受信代理传入的 `https` scheme 不会被再次重定向。
 
-### publish 后的 skills 与启动验证
+### publish 后的启动验证
 
-`Skills:Path` 在启动时仍相对于 API content root 解析，并且必须是相对路径。若从 `publish/api` 启动，可将 skills 放在相邻目录：
+`Skills:Path` 相对于 API content root 解析，默认 `skills` 即 `publish/api/skills/`。启动示例：
 
 ```bash
-mkdir -p publish/skills
-cp -R backend/astrox-skills/skills/. publish/skills/
 cd publish/api
 export Agent__ApiKey="<your-key>"
-export Skills__Path="../skills"
 export ASPNETCORE_URLS="http://127.0.0.1:5088"
 dotnet CesiumAI.Api.dll
 ```
 
-缺少目录、绝对 `Skills__Path` 或无效 Agent/Astrox 配置会在应用启动阶段直接失败，不会延迟到首个聊天请求。进程开始监听后，用健康端点验证启动与反代：
+缺少 `skills/` 目录、绝对 `Skills__Path` 或无效 Agent/Astrox 配置会在应用启动阶段直接失败，不会延迟到首个聊天请求。进程开始监听后，用健康端点验证启动与反代：
 
 ```bash
 curl --fail http://127.0.0.1:5088/healthz

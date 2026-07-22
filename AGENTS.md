@@ -13,7 +13,7 @@ CesiumAI 是双层应用：ASP.NET Core（.NET 10）后端 API 与 React + Cesiu
 ### 工具链 / 环境
 
 - `.NET 10 SDK` 安装在 `/usr/local/dotnet`，并软链接到 `/usr/local/bin/dotnet`（已在 `PATH` 中）。Node.js 22 与 npm 已预装。这些已写入 VM 快照；启动更新脚本仅刷新 npm 依赖与 Playwright Chromium。
-- `backend/astrox-skills` 为 Git submodule（上游 `https://gitee.com/blitheli/astrox-skills.git`）。后端从 `backend/astrox-skills/skills` 加载 skills（默认 `Skills:Path=../astrox-skills/skills`）。若 submodule 未初始化，后端会在启动时快速失败；在仓库根目录执行：`git submodule update --init --recursive`。
+- `backend/astrox-skills` 为 Git submodule（上游 `https://gitee.com/blitheli/astrox-skills.git`）。构建时同步到 API content root 内的 `backend/CesiumAI.Api/skills/`（默认 `Skills:Path=skills`）。若 submodule 未初始化，构建/启动会失败；在仓库根目录执行：`git submodule update --init --recursive`。
 
 ### 一键启动（推荐）
 

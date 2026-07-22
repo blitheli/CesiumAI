@@ -9,8 +9,9 @@ public sealed class SkillsStartupValidationTests
     [Fact]
     public void MissingSkillsDirectory_FailsApplicationStartup_EvenWhenChatServiceIsReplaced()
     {
+        // 与 content root 同盘，避免 GetRelativePath 跨盘变成绝对路径后误报 “must be relative”
         string missingDirectory = Path.Combine(
-            Path.GetTempPath(),
+            AppContext.BaseDirectory,
             $"cesiumai-missing-skills-{Guid.NewGuid():N}");
         using var factory = new ApiFactory(Environments.Development, missingDirectory);
 
@@ -26,8 +27,7 @@ public sealed class SkillsStartupValidationTests
     [Fact]
     public async Task ExistingFixtureSkillsDirectory_AllowsApplicationStartup()
     {
-        string skillsDirectory =
-            Directory.CreateTempSubdirectory("cesiumai-valid-skills-").FullName;
+        string skillsDirectory = ApiFactory.CreateOwnedSkillsDirectory();
 
         try
         {

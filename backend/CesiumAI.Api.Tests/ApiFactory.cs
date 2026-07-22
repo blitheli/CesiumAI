@@ -22,7 +22,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     public ApiFactory()
         : this(
             Environments.Development,
-            Directory.CreateTempSubdirectory("cesiumai-test-skills-").FullName,
+            CreateOwnedSkillsDirectory(),
             ownsSkillsDirectory: true)
     {
     }
@@ -30,7 +30,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     internal ApiFactory(string environment)
         : this(
             environment,
-            Directory.CreateTempSubdirectory("cesiumai-test-skills-").FullName,
+            CreateOwnedSkillsDirectory(),
             ownsSkillsDirectory: true)
     {
     }
@@ -48,6 +48,19 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         _environment = environment;
         _skillsDirectory = skillsDirectory;
         _ownsSkillsDirectory = ownsSkillsDirectory;
+    }
+
+    /// <summary>
+    /// 在测试程序集输出目录下创建 skills 目录，保证与 API content root 同盘，
+    /// 从而 Path.GetRelativePath 不会回退成绝对路径（跨盘时会被 SkillsOptions 拒绝）。
+    /// </summary>
+    internal static string CreateOwnedSkillsDirectory()
+    {
+        string parent = Path.Combine(AppContext.BaseDirectory, ".test-skills");
+        Directory.CreateDirectory(parent);
+        string directory = Path.Combine(parent, Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        return directory;
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)

@@ -1,0 +1,52 @@
+name: 部署前端
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/deploy-frontend.yml"
+
+concurrency:
+  group: deploy-frontend
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: 部署
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 构建前端
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: 清空远端前端目录
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.ALIYUN_HOST }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+          script: |
+            powershell -NoProfile -Command "if (Test-Path 'D:\IIS\ASTROX.CesiumAI.frontend') { Get-ChildItem -Force 'D:\IIS\ASTROX.CesiumAI.frontend' | Remove-Item -Recurse -Force }; New-Item -ItemType Directory -Force -Path 'D:\IIS\ASTROX.CesiumAI.frontend' | Out-Null"
+
+      - name: 上传前端产物
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.ALIYUN_HOST }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+          source: "frontend/dist/"
+          target: "D:/IIS/ASTROX.CesiumAI.frontend"
+          strip_components: 2

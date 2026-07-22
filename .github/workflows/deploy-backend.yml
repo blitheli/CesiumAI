@@ -1,0 +1,67 @@
+name: 部署后端
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/deploy-backend.yml"
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: 部署
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码（含 submodule）
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: 安装 .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: 发布 API
+        run: dotnet publish backend/CesiumAI.Api -c Release -o publish/api
+
+      - name: 停止 IIS 应用池
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.ALIYUN_HOST }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+          script: |
+            C:\Windows\System32\inetsrv\appcmd.exe stop apppool /apppool.name:"CesiumAI.backend" & exit /b 0
+
+      - name: 清空远端后端目录
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.ALIYUN_HOST }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+          script: |
+            powershell -NoProfile -Command "if (Test-Path 'D:\IIS\ASTROX.CesiumAI.backend') { Get-ChildItem -Force 'D:\IIS\ASTROX.CesiumAI.backend' | Remove-Item -Recurse -Force }; New-Item -ItemType Directory -Force -Path 'D:\IIS\ASTROX.CesiumAI.backend' | Out-Null"
+
+      - name: 上传后端产物
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.ALIYUN_HOST }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+          source: "publish/api/"
+          target: "D:/IIS/ASTROX.CesiumAI.backend"
+          strip_components: 2
+
+      - name: 启动 IIS 应用池
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.ALIYUN_HOST }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+          script: |
+            C:\Windows\System32\inetsrv\appcmd.exe start apppool /apppool.name:"CesiumAI.backend" & exit /b 0

@@ -68,7 +68,7 @@
 │  ASP.NET Core                                                │
 │  ChatController → ChatService                                │
 │       ├─ AIAgent (Microsoft Agent Framework)                 │
-│       ├─ AgentSkillsProvider (backend/astrox-skills/skills)   │
+│       ├─ AgentSkillsProvider (CesiumAI.Api/skills)            │
 │       ├─ HttpGet/HttpPost → Astrox WebAPI                    │
 │       └─ 场景 Tools → ISceneOpCollector → sceneOps           │
 └─────────────────────────────────────────────────────────────┘
@@ -341,7 +341,7 @@ OpenAIClient(Kimi/Moonshot endpoint)
 
 - **源仓库**：`https://gitee.com/blitheli/astrox-skills.git`
 - **内容**：航天动力学算法 SKILLS；`skills/<skill-name>/SKILL.md` + `fixtures/`；公共协议在 `skills/shared-docs/`（含 CZML position 等 schema）；`astrox-web-api.json` 可作为 API 参考
-- **接入（F1）**：以 Git submodule 置于 `backend/astrox-skills`；`AgentSkillsProvider` 加载其 `skills/` 目录（默认 `Skills:Path=../astrox-skills/skills`）
+- **接入（F1）**：以 Git submodule 置于 `backend/astrox-skills`；构建同步到 `CesiumAI.Api/skills/`；`AgentSkillsProvider` 默认 `Skills:Path=skills`
 - **职责划分**：Skill + 泛型 HTTP 用于计算/查询；**写场景**只走强类型场景 Tools
 
 ### 7.5 Session 存储

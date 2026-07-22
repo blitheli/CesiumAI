@@ -5,10 +5,47 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UserSecretsId>CesiumAI.Api</UserSecretsId>
+    <AstroxSkillsSource>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\astrox-skills\skills'))</AstroxSkillsSource>
+    <AstroxSkillsContentRoot>$(MSBuildProjectDirectory)\skills</AstroxSkillsContentRoot>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.13.0" />
   </ItemGroup>
+
+  <!--
+    运行时固定使用 content root 内的 skills/。
+    submodule 仍在 ../astrox-skills，构建时同步到本目录（dotnet run）与发布目录。
+  -->
+  <Target Name="SyncAstroxSkillsIntoContentRoot" BeforeTargets="BeforeBuild">
+    <Error
+      Condition="!Exists('$(AstroxSkillsSource)')"
+      Text="未找到 Astrox skills 源目录 '$(AstroxSkillsSource)'。请先执行：git submodule update --init --recursive" />
+    <ItemGroup>
+      <_AstroxSkillsSourceFiles Include="$(AstroxSkillsSource)\**\*" />
+    </ItemGroup>
+    <MakeDir Directories="$(AstroxSkillsContentRoot)" />
+    <Copy
+      SourceFiles="@(_AstroxSkillsSourceFiles)"
+      DestinationFiles="@(_AstroxSkillsSourceFiles->'$(AstroxSkillsContentRoot)\%(RecursiveDir)%(Filename)%(Extension)')"
+      SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="SyncAstroxSkillsIntoPublishDir" AfterTargets="Publish">
+    <Error
+      Condition="!Exists('$(AstroxSkillsSource)')"
+      Text="未找到 Astrox skills 源目录 '$(AstroxSkillsSource)'。请先执行：git submodule update --init --recursive" />
+    <PropertyGroup>
+      <_AstroxSkillsPublishDir>$(PublishDir)skills\</_AstroxSkillsPublishDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <_AstroxSkillsPublishFiles Include="$(AstroxSkillsSource)\**\*" />
+    </ItemGroup>
+    <MakeDir Directories="$(_AstroxSkillsPublishDir)" />
+    <Copy
+      SourceFiles="@(_AstroxSkillsPublishFiles)"
+      DestinationFiles="@(_AstroxSkillsPublishFiles->'$(_AstroxSkillsPublishDir)%(RecursiveDir)%(Filename)%(Extension)')"
+      SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>
