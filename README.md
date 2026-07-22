@@ -167,9 +167,7 @@ cp -R frontend/dist publish/frontend
 
 ### 生产服务器配置 Agent__ApiKey（Windows / IIS）
 
-后端启动与真实对话依赖环境变量 `Agent__ApiKey`（对应配置项 `Agent:ApiKey`）。在阿里云 Windows 服务器上任选一种方式设置（推荐机器级，部署覆盖站点文件后仍生效）：
-
-**方式 A：系统环境变量（推荐，PowerShell 管理员）**
+后端启动与真实对话依赖环境变量 `Agent__ApiKey`（对应配置项 `Agent:ApiKey`）。在阿里云 Windows 服务器上用**系统环境变量**设置（机器级，部署覆盖站点文件后仍生效；需 PowerShell 管理员）：
 
 ```powershell
 [System.Environment]::SetEnvironmentVariable(
@@ -184,15 +182,6 @@ cp -R frontend/dist publish/frontend
 C:\Windows\System32\inetsrv\appcmd.exe recycle apppool /apppool.name:"CesiumAI.backend"
 ```
 
-**方式 B：IIS 站点环境变量（仅该站点）**
-
-1. 打开 IIS 管理器 → 选中后端站点（物理路径 `D:\IIS\ASTROX.CesiumAI.backend`）
-2. 打开「配置编辑器」→ 节路径选 `system.webServer/aspNetCore`
-3. 编辑 `environmentVariables`，新增：
-   - `name`：`Agent__ApiKey`
-   - `value`：你的 Kimi API Key
-4. 应用并回收应用池
-
 可选覆盖（一般不必改，仓库 `appsettings.json` 已有默认值）：
 
 | 环境变量 | 含义 | 默认 |
@@ -206,12 +195,50 @@ C:\Windows\System32\inetsrv\appcmd.exe recycle apppool /apppool.name:"CesiumAI.b
 验证（应用池已启动后）：
 
 ```powershell
-curl.exe --fail http://127.0.0.1:5088/healthz
+curl.exe --fail http://127.0.0.1:8791/healthz
 ```
 
 应返回 `Healthy`。`/healthz` 只检查启动配置是否通过；真实对话才需要有效 Key。
 
-生产构建不设置 `VITE_API_BASE_URL`，浏览器将同源请求 `/api/chat`。推荐由 Nginx、Caddy、IIS 反代或等价网关托管 `publish/frontend`，将 SPA 回退到 `index.html`，并把 `/api/` 与 `/healthz` 反向代理到只在内网监听的 ASP.NET 进程。例如 Nginx：
+### 生产入口：同源反代（必做）
+
+生产构建**不设置** `VITE_API_BASE_URL`，浏览器会向**前端站点同源**请求 `POST /api/chat`。  
+因此即使用「前端 / 后端两个 IIS 网站」，对外也应只打开前端域名，并由前端站点把 `/api`、`/healthz` 反代到后端。否则会出现：后端 `/healthz` 正常，但聊天界面 `Chat request failed 404`。
+
+仓库已提供前端 IIS 配置模板：`frontend/public/web.config`（构建后进入 `dist/web.config`，随「部署前端」上传到 `D:\IIS\ASTROX.CesiumAI.frontend`）。其中反代目标为 `http://127.0.0.1:8791`（阿里云后端站点端口）；若你本机绑定不同，请改该文件后再部署。
+
+#### IIS 前置组件（缺了会整站 500）
+
+必须先安装并启用，再放入 `web.config`：
+
+1. **IIS URL Rewrite**（URL 重写）  
+   - 未安装时，站点根目录一旦有带 `<rewrite>` 的 `web.config`，整站会 **HTTP 500**（常见 500.19）。
+2. **Application Request Routing (ARR)**  
+   - 安装后 IIS 服务器节点会出现 **Application Request Routing Cache**。
+3. **启用代理总开关（只做一次）**  
+   1. `Win+R` → `inetmgr` 打开 IIS 管理器  
+   2. 左侧点最上方**服务器名**（不要点某个网站）  
+   3. 双击 **Application Request Routing Cache**  
+   4. 右侧 **Server Proxy Settings…**  
+   5. 勾选 **Enable proxy** → **Apply**
+
+#### 验证反代
+
+在本机先确认后端直连可用：
+
+```powershell
+curl.exe --fail http://127.0.0.1:8791/healthz
+```
+
+再用**前端站点域名**验证同源反代：
+
+```powershell
+curl.exe --fail https://你的前端域名/healthz
+```
+
+应返回 `Healthy`。浏览器 F12 → Network 中 `POST /api/chat` 不应再是 404。
+
+#### Nginx 示例（非 IIS 时）
 
 ```nginx
 location / {
@@ -220,14 +247,14 @@ location / {
 }
 
 location /api/ {
-    proxy_pass http://127.0.0.1:5088;
+    proxy_pass http://127.0.0.1:8791;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto $scheme;
 }
 
 location = /healthz {
-    proxy_pass http://127.0.0.1:5088/healthz;
+    proxy_pass http://127.0.0.1:8791/healthz;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto $scheme;
 }
@@ -250,14 +277,14 @@ export ReverseProxy__KnownProxies__0="10.0.0.12"
 ```bash
 cd publish/api
 export Agent__ApiKey="<your-key>"
-export ASPNETCORE_URLS="http://127.0.0.1:5088"
+export ASPNETCORE_URLS="http://127.0.0.1:8791"
 dotnet CesiumAI.Api.dll
 ```
 
 缺少 `skills/` 目录、绝对 `Skills__Path` 或无效 Agent/Astrox 配置会在应用启动阶段直接失败，不会延迟到首个聊天请求。进程开始监听后，用健康端点验证启动与反代：
 
 ```bash
-curl --fail http://127.0.0.1:5088/healthz
+curl --fail http://127.0.0.1:8791/healthz
 curl --fail https://cesiumai.example/healthz
 ```
 
