@@ -318,7 +318,7 @@ npm run e2e
 npm run lint
 ```
 
-`npm run e2e` 会自行启动 `http://127.0.0.1:5173` 上的 Vite，并拦截 `POST /api/chat/stream`，以 SSE 事件流（`session` → `delta` → `tool_call`/`tool_result` → `delta` → `done`）返回；误用非流式 `POST /api/chat` 视为失败。Playwright 场景使用确定性响应，不访问 live LLM 或 Astrox；覆盖清空、添加/更新地面站、SSO/J2 卫星，以及相机定位/跟随/相对微调/单次与持续环绕/停止、ISS 样式修改后 Position 保留。验收通过**测试专用**只读 diagnostics（`VITE_ENABLE_TEST_DIAGNOSTICS=true`，由 Playwright `webServer` 注入；含 `data-scene-diagnostics` 与 `window.__CESIUM_AI_READ_DIAGNOSTICS__`）观测 tracked entity、orbit 状态、相机 heading/位置与样式，不绕过真实相机控制器。正常 `npm run build` / 生产构建不得设置该变量，因此不会暴露 diagnostics UI 或 window 全局。同时检查 Cesium canvas 持久存在且无 console error（唯一例外：未配置 `VITE_CESIUM_ION_TOKEN` 且 Cesium 内置默认 ion token 已过期时，`api.cesium.com` 的 401 及随之的 `RequestErrorEvent` 会被忽略）。
+`npm run e2e` 会自行启动 `http://127.0.0.1:5173` 上的 Vite，并拦截 `POST /api/chat/stream`，以 SSE 事件流（`session` → `delta` → `tool_call`/`tool_result` → `delta` → `done`）返回；误用非流式 `POST /api/chat` 视为失败。Playwright 场景使用确定性响应，不访问 live LLM 或 Astrox；覆盖清空、添加/更新地面站、SSO/J2 卫星，以及相机定位/跟随/相对微调/单次与持续环绕/停止、ISS 样式修改后 Position 保留。验收通过**测试专用**只读 diagnostics（`VITE_ENABLE_TEST_DIAGNOSTICS=true`，由 Playwright `webServer` 注入；含 `data-scene-diagnostics` 与 `window.__CESIUM_AI_READ_DIAGNOSTICS__`）观测 tracked entity、orbit 状态、相机 heading/位置与样式，不绕过真实相机控制器。正常 `npm run build` / 生产构建不得设置该变量，因此不会暴露 diagnostics UI 或 window 全局。同时检查 Cesium canvas 持久存在且无任何 console error。底图：若运行 e2e 的 shell 设置了 `VITE_CESIUM_ION_TOKEN`（Playwright 会透传给 Vite），使用真实 Cesium ion；未设置时，e2e 把 ion 资产端点 stub 为 Cesium 自带的离线 NaturalEarthII 瓦片，避免依赖内置默认 token 的有效期与外网。
 
 首次运行或 Playwright 升级后，如 Chromium 尚未安装：
 

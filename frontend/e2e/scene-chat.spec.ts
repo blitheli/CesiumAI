@@ -204,6 +204,36 @@ async function sendCommand(
   await expectSameCanvas(page);
 }
 
+/**
+ * 未配置 VITE_CESIUM_ION_TOKEN 时，Cesium 会用内置默认 ion token 请求底图资产端点，
+ * 该 token 过期后返回 401 并产生 console error，使 e2e 依赖外部服务状态。
+ * 此时把 ion 资产端点 stub 成指向 Cesium 自带离线 NaturalEarthII 瓦片（由 Vite 在 /cesium 提供）的
+ * 无 externalType 影像端点，Cesium 会按 TMS 加载本地瓦片。其他 ion 请求不拦截，若出现会照常暴露。
+ * 配置了 token 时不做任何拦截，直接使用真实 ion。
+ */
+async function stubCesiumIonWithoutToken(page: Page) {
+  if (process.env.VITE_CESIUM_ION_TOKEN) {
+    return;
+  }
+
+  const baseURL = test.info().project.use.baseURL ?? "http://127.0.0.1:5173";
+  const offlineImageryUrl = new URL(
+    "/cesium/Assets/Textures/NaturalEarthII/",
+    baseURL,
+  ).href;
+
+  await page.route("https://api.cesium.com/v1/assets/*/endpoint**", (route) =>
+    route.fulfill({
+      json: {
+        type: "IMAGERY",
+        url: offlineImageryUrl,
+        accessToken: "e2e-offline",
+        attributions: [],
+      },
+    }),
+  );
+}
+
 async function openApp(
   page: Page,
   handler: (request: ChatRequest) => ChatResponse,
@@ -213,38 +243,13 @@ async function openApp(
   const isBenignCesiumSandboxError = (text: string) =>
     text.includes("Blocked script execution in 'about:blank'") &&
     text.includes("sandboxed");
-  // 未配置 VITE_CESIUM_ION_TOKEN 时 Cesium 使用内置默认 ion token；该 token 过期后
-  // api.cesium.com 会返回 401，Cesium 随之打印 RequestErrorEvent。这只与外部底图服务有关，
-  // 因此仅在确实观测到 ion 401 响应后才忽略这两类消息，其余 console error 仍判失败。
-  let cesiumIonUnauthorized = false;
-  page.on("response", (response) => {
-    if (
-      response.status() === 401 &&
-      new URL(response.url()).hostname === "api.cesium.com"
-    ) {
-      cesiumIonUnauthorized = true;
-    }
-  });
-  const isCesiumIonAuthError = (message: ConsoleMessage) => {
-    if (!cesiumIonUnauthorized) {
-      return false;
-    }
-    const text = message.text();
-    const location = message.location().url;
-    return (
-      text === "RequestErrorEvent" ||
-      (text.includes("status of 401") &&
-        location !== "" &&
-        new URL(location).hostname === "api.cesium.com")
-    );
-  };
   const captureConsoleError = (message: ConsoleMessage) => {
     if (message.type() !== "error") {
       return;
     }
     const text = message.text();
     // 典型 widgets（infoBox 等）使用 sandboxed iframe，Playwright 会报无害脚本拦截。
-    if (isBenignCesiumSandboxError(text) || isCesiumIonAuthError(message)) {
+    if (isBenignCesiumSandboxError(text)) {
       return;
     }
     browserErrors.push(text);
@@ -256,6 +261,7 @@ async function openApp(
       browserErrors.push(error.message);
     }
   });
+  await stubCesiumIonWithoutToken(page);
   // 页面必须走流式端点；若误用非流式 POST /api/chat 则记录为错误。
   await page.route("**/api/chat", async (route) => {
     browserErrors.push(`unexpected non-streaming request: ${route.request().url()}`);
