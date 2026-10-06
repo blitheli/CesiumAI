@@ -242,7 +242,7 @@ curl.exe --fail https://你的前端域名/healthz
 
 前端聊天走 `POST /api/chat/stream`（`text/event-stream`）。后端已发送 `Cache-Control: no-cache, no-transform` 与 `X-Accel-Buffering: no` 并逐事件 flush，但反代层仍可能把整段响应攒到结束才转发，表现为“回复最后一次性出现”。部署时请确认：
 
-- **IIS + ARR**：服务器节点 → Application Request Routing Cache → Server Proxy Settings → **Response buffer threshold (KB)** 设为 `0`；并确保动态压缩不作用于 `text/event-stream`（压缩会缓冲整段响应）。
+- **IIS + ARR**：服务器节点 → Application Request Routing Cache → Server Proxy Settings → **Response buffer threshold (KB)** 设为 `0`，**Time-out (seconds)** 调到大于后端 `ChatEndpoint:Timeout`（默认 120 秒，与 ARR 默认超时相同，长轮次会先被 ARR 断开），如 `300`。这两项只能在服务器级设置，等价命令（管理员）：`%windir%\system32\inetsrv\appcmd.exe set config -section:system.webServer/proxy /responseBufferLimit:"0" /timeout:"00:05:00" /commit:apphost`。动态压缩会缓冲整段响应，`frontend/public/web.config` 已对 `/api` 关闭动态压缩；若后端站点自身开启了动态压缩，也需对其关闭。
 - **Nginx**：`X-Accel-Buffering: no` 已足够；也可在 `location /api/` 中显式 `proxy_buffering off;`。
 
 可用 `curl -N -X POST https://你的前端域名/api/chat/stream -H "Content-Type: application/json" -d '{"message":"你好","sceneSummary":{"entities":[]}}'` 观察事件是否逐条到达。
