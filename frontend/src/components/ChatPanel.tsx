@@ -53,7 +53,7 @@ export function ChatPanel({
     <aside className="chat-panel" aria-label="场景助手">
       <header className="chat-header">
         <h1>CesiumAI</h1>
-        <p>用自然语言探索和编辑场景</p>
+        <p>用自然语言探索和编辑场景-{__APP_LAST_UPDATED__}</p>
       </header>
 
       <div className="message-list" aria-live="polite">
