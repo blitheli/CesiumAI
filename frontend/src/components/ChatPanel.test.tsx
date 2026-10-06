@@ -25,6 +25,15 @@ function renderPanel(
   return { ...render(<ChatPanel {...props} />), props };
 }
 
+it("副标题末尾显示构建注入的最新更新日期", () => {
+  renderPanel();
+
+  expect(__APP_LAST_UPDATED__).toMatch(/^\d{8}$/);
+  expect(
+    screen.getByText(`用自然语言探索和编辑场景-${__APP_LAST_UPDATED__}`),
+  ).toBeInTheDocument();
+});
+
 it("submits a non-empty message", async () => {
   const user = userEvent.setup();
   const onSend = vi.fn();

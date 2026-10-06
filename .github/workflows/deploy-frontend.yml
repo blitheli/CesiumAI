@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - "frontend/**"
+      # 页面显示的更新日期来自 CHANGES.md
+      - "CHANGES.md"
       - ".github/workflows/deploy-frontend.yml"
 
 concurrency:

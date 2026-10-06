@@ -4,6 +4,8 @@ import {
   type ConsoleMessage,
   type Page,
 } from "@playwright/test";
+import { fileURLToPath } from "node:url";
+import { readLatestChangeDate } from "../build/changelogDate.ts";
 
 type ChatRequest = {
   message: string;
@@ -297,6 +299,18 @@ async function openApp(
     browserErrors,
   };
 }
+
+test("header subtitle shows the latest CHANGES.md date", async ({ page }) => {
+  const { browserErrors } = await openApp(page, () => response("ok"));
+  const latestDate = readLatestChangeDate(
+    fileURLToPath(new URL("../../CHANGES.md", import.meta.url)),
+  );
+
+  await expect(page.locator(".chat-header p")).toHaveText(
+    `用自然语言探索和编辑场景-${latestDate}`,
+  );
+  expect(browserErrors).toEqual([]);
+});
 
 test("clear resets the scene while the Cesium canvas stays mounted", async ({
   page,

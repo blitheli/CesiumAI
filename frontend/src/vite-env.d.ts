@@ -15,6 +15,9 @@ interface ImportMeta {
 }
 
 declare global {
+  /** 构建时由 vite.config.ts 从仓库根目录 CHANGES.md 最新条目注入，格式 YYYYMMDD。 */
+  const __APP_LAST_UPDATED__: string;
+
   interface Window {
     /** 只读场景诊断读取器；仅在 VITE_ENABLE_TEST_DIAGNOSTICS=true 时挂载。 */
     __CESIUM_AI_READ_DIAGNOSTICS__?: () => SceneDiagnostics;
