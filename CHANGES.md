@@ -5,6 +5,7 @@
 
 ## 2026-10-06
 
+- 修复：同一会话在出现工具调用后，后续轮次全部失败（界面显示「Agent request failed.」）。根因是 kimi 流式回复首个分片为空串，被推理内容隔开后会话历史中残留空文本片段，Moonshot 以 400 `text content is empty` 拒绝；另外工具循环中途失败会遗留未应答的 tool_calls，同样使该会话此后每轮都返回 400。新增 `ChatHistorySanitizingChatClient`，发往 LLM 前清洗历史；前端 `web.config` 对 `/api` 关闭动态压缩，README 补充 ARR 响应缓冲与超时设置（[PR #9](https://github.com/blitheli/CesiumAI/pull/9)）。
 - 前端副标题末尾显示最新更新日期，构建时由 `frontend/vite.config.ts` 从本文件最新日期标题读取并通过 Vite `define` 注入（`__APP_LAST_UPDATED__`），无需两处手工维护；开发时修改本文件会自动重启 dev server。
 - 新增本文件 `CHANGES.md` 记录每次更新，并在 `AGENTS.md` 中约定每次更新须追加条目；前端部署工作流在本文件变更时也会触发，确保线上日期同步。
 - 修复：前端部署构建注入 `VITE_CESIUM_ION_TOKEN`，README 补充对应 GitHub Secret 说明（[PR #6](https://github.com/blitheli/cesiumai/pull/6)）。
