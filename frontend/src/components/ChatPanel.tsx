@@ -4,11 +4,15 @@ export type UiMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
+  /** 助手回复仍在流式输出中。 */
+  streaming?: boolean;
 };
 
 export type ChatPanelProps = {
   messages: UiMessage[];
   loading: boolean;
+  /** 流式进度提示（如正在调用的工具）；为空时显示通用“正在处理…”。 */
+  activity?: string | null;
   error: string | null;
   onSend: (text: string) => void | Promise<void>;
 };
@@ -16,6 +20,7 @@ export type ChatPanelProps = {
 export function ChatPanel({
   messages,
   loading,
+  activity = null,
   error,
   onSend,
 }: ChatPanelProps) {
@@ -57,8 +62,10 @@ export function ChatPanel({
         ) : null}
         {messages.map((message) => (
           <div
-            className={`message message-${message.role}`}
+            className={`message message-${message.role}${message.streaming ? " message-streaming" : ""}`}
             data-role={message.role}
+            data-streaming={message.streaming ? "true" : undefined}
+            aria-busy={message.streaming ? true : undefined}
             key={message.id}
           >
             <span className="message-label">
@@ -70,7 +77,7 @@ export function ChatPanel({
       </div>
 
       <div className="chat-feedback">
-        {loading ? <p role="status">正在处理…</p> : null}
+        {loading ? <p role="status">{activity ?? "正在处理…"}</p> : null}
         {error ? <p role="alert">{error}</p> : null}
       </div>
 

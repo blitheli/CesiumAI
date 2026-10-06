@@ -134,6 +134,7 @@ it("assembles scene context, reuses the session, and applies each response once"
       ],
     },
     expect.any(AbortSignal),
+    expect.any(Function),
   );
   expect(manager.applySceneOps).toHaveBeenCalledOnce();
   expect(manager.applySceneOps).toHaveBeenCalledWith(responses[0]!.sceneOps);
@@ -149,6 +150,7 @@ it("assembles scene context, reuses the session, and applies each response once"
       sessionId: "session-1",
     }),
     expect.any(AbortSignal),
+    expect.any(Function),
   );
   expect(manager.applySceneOps).toHaveBeenCalledTimes(2);
   expect(manager.applySceneOps).toHaveBeenNthCalledWith(
@@ -260,27 +262,21 @@ it("shows API errors without retrying", async () => {
   expect(chatClient).toHaveBeenCalledOnce();
 });
 
-it("clear + 畸形 focus 在 postChat 阶段整体拒绝，manager 完全不调用", async () => {
+it("clear + 畸形 focus 在 streamChat 阶段整体拒绝，manager 完全不调用", async () => {
   const user = userEvent.setup();
   const manager = createManager();
-  const { postChat } = await import("../api/chat");
+  const { streamChat } = await import("../api/chat");
   vi.stubEnv("VITE_API_BASE_URL", "https://api.example");
+  const done = {
+    sessionId: "session-1",
+    message: "不应被应用",
+    sceneOps: [{ op: "clear" }, { op: "camera", action: "focus" }],
+  };
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          sessionId: "session-1",
-          message: "不应被应用",
-          sceneOps: [
-            { op: "clear" },
-            { op: "camera", action: "focus" },
-          ],
-        }),
-      ),
-    ),
+    vi.fn(async () => new Response(`event: done\ndata: ${JSON.stringify(done)}\n\n`)),
   );
-  renderApp(manager, postChat);
+  renderApp(manager, streamChat);
 
   await user.type(screen.getByLabelText("消息"), "清空并定位{Enter}");
 
@@ -290,6 +286,103 @@ it("clear + 畸形 focus 在 postChat 阶段整体拒绝，manager 完全不调�
   expect(manager.applySceneOps).not.toHaveBeenCalled();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
+});
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+it("renders streamed deltas and tool activity progressively, then applies sceneOps once on done", async () => {
+  const user = userEvent.setup();
+  const manager = createManager();
+  const afterDelta = deferred();
+  const afterTool = deferred();
+  const finish = deferred();
+  const sceneOps: ChatResponse["sceneOps"] = [{ op: "clear" }];
+  const chatClient = vi.fn<ChatClient>(async (_request, _signal, onEvent) => {
+    await onEvent?.({ type: "session", sessionId: "session-9" });
+    await onEvent?.({ type: "delta", text: "正在清" });
+    await afterDelta.promise;
+    await onEvent?.({ type: "tool_call", callId: "c1", name: "ClearScene" });
+    await afterTool.promise;
+    await onEvent?.({ type: "tool_result", callId: "c1", succeeded: true });
+    await onEvent?.({ type: "delta", text: "空场景。" });
+    await finish.promise;
+    const response = { sessionId: "session-9", message: "正在清空场景。", sceneOps };
+    await onEvent?.({ type: "done", ...response });
+    return response;
+  });
+  renderApp(manager, chatClient);
+
+  await user.type(screen.getByLabelText("消息"), "清空{Enter}");
+
+  const partial = await screen.findByText("正在清");
+  expect(partial.closest('[data-role="assistant"]')).toHaveAttribute(
+    "data-streaming",
+    "true",
+  );
+  expect(manager.applySceneOps).not.toHaveBeenCalled();
+
+  afterDelta.resolve();
+  expect(await screen.findByRole("status")).toHaveTextContent(
+    "正在调用工具 ClearScene…",
+  );
+
+  afterTool.resolve();
+  expect(await screen.findByText("正在清空场景。")).toBeInTheDocument();
+  expect(screen.getByRole("status")).toHaveTextContent("ClearScene 已完成");
+  expect(manager.applySceneOps).not.toHaveBeenCalled();
+
+  finish.resolve();
+  await waitFor(() => expect(manager.applySceneOps).toHaveBeenCalledOnce());
+  expect(manager.applySceneOps).toHaveBeenCalledWith(sceneOps);
+  const final = screen.getByText("正在清空场景。");
+  expect(final.closest('[data-role="assistant"]')).not.toHaveAttribute(
+    "data-streaming",
+  );
+  expect(screen.getAllByText(/正在清/)).toHaveLength(1);
+  await waitFor(() => expect(screen.getByLabelText("消息")).toBeEnabled());
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+it("keeps partial text on stream failure, applies nothing, and reuses the streamed session id", async () => {
+  const user = userEvent.setup();
+  const manager = createManager();
+  const chatClient = vi
+    .fn<ChatClient>()
+    .mockImplementationOnce(async (_request, _signal, onEvent) => {
+      await onEvent?.({ type: "session", sessionId: "session-err" });
+      await onEvent?.({ type: "delta", text: "处理到一半" });
+      throw new Error("Agent request exceeded 120 seconds.");
+    })
+    .mockResolvedValueOnce({ sessionId: "session-err", message: "好了", sceneOps: [] });
+  renderApp(manager, chatClient);
+
+  await user.type(screen.getByLabelText("消息"), "添加卫星{Enter}");
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Agent request exceeded 120 seconds.",
+  );
+  const partial = screen.getByText("处理到一半");
+  expect(partial.closest('[data-role="assistant"]')).not.toHaveAttribute(
+    "data-streaming",
+  );
+  expect(manager.applySceneOps).not.toHaveBeenCalled();
+
+  await waitFor(() => expect(screen.getByLabelText("消息")).toBeEnabled());
+  await user.type(screen.getByLabelText("消息"), "再试一次{Enter}");
+
+  expect(await screen.findByText("好了")).toBeInTheDocument();
+  expect(chatClient).toHaveBeenNthCalledWith(
+    2,
+    expect.objectContaining({ sessionId: "session-err" }),
+    expect.any(AbortSignal),
+    expect.any(Function),
+  );
 });
 
 it("shows apply errors without reapplying scene operations", async () => {
