@@ -15,3 +15,11 @@ it("moves chat below the viewer at 800px with a 45% height cap", () => {
     /@media\s*\(max-width:\s*800px\)[\s\S]*?\.chat-panel\s*\{[^}]*max-height:\s*45(?:svh|dvh|vh)/,
   );
 });
+
+it("lets assistant Markdown tables scroll horizontally and keeps the streaming caret", () => {
+  expect(css).toMatch(/\.message-table-scroll\s*\{[^}]*overflow-x:\s*auto/);
+  expect(css).toMatch(
+    /\.message-streaming \.message-markdown > :not\(ul, ol\):last-child::after/,
+  );
+  expect(css).toMatch(/\.message-streaming p\.message-bubble::after/);
+});

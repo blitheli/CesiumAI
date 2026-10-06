@@ -132,7 +132,7 @@ it("inserts a newline with Shift+Enter", async () => {
   expect(onSend).not.toHaveBeenCalled();
 });
 
-it("renders user and assistant messages as plain text", () => {
+it("renders user messages as plain text and assistant HTML as escaped text", () => {
   const { container } = renderPanel({ messages });
 
   expect(screen.getByText("移动三亚")).toBeInTheDocument();
@@ -140,6 +140,39 @@ it("renders user and assistant messages as plain text", () => {
     screen.getByText("已移动 <img src=x onerror=alert(1)>"),
   ).toBeInTheDocument();
   expect(container.querySelector("img")).not.toBeInTheDocument();
+});
+
+it("renders assistant Markdown but keeps user Markdown literal", () => {
+  const { container } = renderPanel({
+    messages: [
+      { id: "user-1", role: "user", text: "**原样**" },
+      { id: "assistant-1", role: "assistant", text: "已设置 **高度** 为 `50`" },
+    ],
+  });
+
+  expect(screen.getByText("**原样**")).toBeInTheDocument();
+  const assistant = container.querySelector('[data-role="assistant"]');
+  expect(assistant?.querySelector("strong")).toHaveTextContent("高度");
+  expect(assistant?.querySelector("code")).toHaveTextContent("50");
+});
+
+it("keeps the streaming marker while rendering half-finished assistant Markdown", () => {
+  const { container } = renderPanel({
+    loading: true,
+    messages: [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        text: "| 参数 | 值 |\n| --- | --- |\n| 高度 | **9",
+        streaming: true,
+      },
+    ],
+  });
+
+  const message = container.querySelector('[data-role="assistant"]');
+  expect(message).toHaveAttribute("data-streaming", "true");
+  expect(message).toHaveClass("message-streaming");
+  expect(message?.querySelector(".message-markdown table")).toBeInTheDocument();
 });
 
 it("announces errors", () => {
