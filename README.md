@@ -161,7 +161,7 @@ cp -R frontend/dist publish/frontend
 | `.github/workflows/deploy-frontend.yml` | `frontend/**` | `D:/IIS/ASTROX.CesiumAI.frontend` |
 | `.github/workflows/deploy-backend.yml` | `backend/**` | `D:/IIS/ASTROX.CesiumAI.backend`（含内部 `skills/`） |
 
-仓库需配置 Secrets：`ALIYUN_HOST`、`ALIYUN_USERNAME`、`ALIYUN_PASSWORD`。服务器需开启 OpenSSH Server。后端部署会停启 IIS 应用池 `CesiumAI.backend`。
+仓库需配置 Secrets：`ALIYUN_HOST`、`ALIYUN_USERNAME`、`ALIYUN_PASSWORD`，以及前端构建用的 `VITE_CESIUM_ION_TOKEN`（Cesium ion access token，构建时内联进前端产物；未配置时会回退到 Cesium 内置默认 token，过期后生产站点会提示 ion token 错误）。服务器需开启 OpenSSH Server。后端部署会停启 IIS 应用池 `CesiumAI.backend`。
 
 **不要把 Kimi / 模型 API Key 配到 GitHub Secrets。** Actions 只负责编译上传；Key 必须写在阿里云服务器本机环境变量中（见下一小节）。
 
