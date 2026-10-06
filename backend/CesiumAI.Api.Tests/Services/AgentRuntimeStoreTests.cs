@@ -1,6 +1,9 @@
+using System.Runtime.CompilerServices;
 using CesiumAI.Api.Models;
 using CesiumAI.Api.Services;
 using FluentAssertions;
+using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
 
 namespace CesiumAI.Api.Tests.Services;
 
@@ -116,8 +119,106 @@ public class AgentRuntimeStoreTests
         addOutsideTurn.Should().Throw<InvalidOperationException>();
     }
 
+    [Fact]
+    public async Task RunStreamingAsync_HoldsSessionTurnUntilEnumerationCompletes()
+    {
+        var firstChunkSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var factory = new FakeRuntimeFactory(
+            (_, prompt, _) => Task.FromResult(prompt),
+            (sink, prompt, _) => Stream(sink, prompt, firstChunkSent, releaseFirst));
+        var store = new AgentRuntimeStore(factory);
+        var firstCollector = new SceneOpCollector();
+
+        Task<List<string>> first = ReadTexts(store.RunStreamingAsync(
+            "same", "first", firstCollector, CancellationToken.None));
+        await firstChunkSent.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Task<string> second = store.RunAsync("same", "second", new SceneOpCollector(), CancellationToken.None);
+        await Task.Delay(50);
+        second.IsCompleted.Should().BeFalse();
+
+        releaseFirst.TrySetResult();
+        (await first).Should().Equal("first:1", "first:2");
+        (await second).Should().Be("second");
+        firstCollector.Drain().Should().ContainSingle()
+            .Which.Should().BeEquivalentTo(new DeleteSceneOp(["first"]));
+
+        static async IAsyncEnumerable<AgentResponseUpdate> Stream(
+            TurnSceneOpSink sink,
+            string prompt,
+            TaskCompletionSource firstChunkSent,
+            TaskCompletionSource releaseFirst)
+        {
+            yield return new AgentResponseUpdate(ChatRole.Assistant, $"{prompt}:1");
+            firstChunkSent.TrySetResult();
+            await releaseFirst.Task;
+            sink.Add(new DeleteSceneOp([prompt]));
+            yield return new AgentResponseUpdate(ChatRole.Assistant, $"{prompt}:2");
+        }
+    }
+
+    [Fact]
+    public async Task RunStreamingAsync_ReleasesTurnAndCollectorWhenConsumerStopsEarly()
+    {
+        TurnSceneOpSink? createdSink = null;
+        var factory = new FakeRuntimeFactory(
+            (_, prompt, _) => Task.FromResult(prompt),
+            (sink, _, _) =>
+            {
+                createdSink = sink;
+                return Endless();
+            });
+        var store = new AgentRuntimeStore(factory);
+
+        await foreach (AgentResponseUpdate _ in store.RunStreamingAsync(
+            "session", "prompt", new SceneOpCollector(), CancellationToken.None))
+        {
+            break;
+        }
+
+        Action addOutsideTurn = () => createdSink!.Add(new ClearSceneOp());
+        addOutsideTurn.Should().Throw<InvalidOperationException>();
+        (await store.RunAsync("session", "next", new SceneOpCollector(), CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(2))).Should().Be("next");
+
+        static async IAsyncEnumerable<AgentResponseUpdate> Endless()
+        {
+            while (true)
+            {
+                await Task.Yield();
+                yield return new AgentResponseUpdate(ChatRole.Assistant, "chunk");
+            }
+        }
+    }
+
+    [Fact]
+    public async Task RunStreamingAsync_WithoutStreamingDelegate_WrapsTextAsSingleUpdate()
+    {
+        var factory = new FakeRuntimeFactory((_, prompt, _) => Task.FromResult($"reply:{prompt}"));
+        var store = new AgentRuntimeStore(factory);
+
+        List<string> texts = await ReadTexts(store.RunStreamingAsync(
+            "session", "hi", new SceneOpCollector(), CancellationToken.None));
+
+        texts.Should().Equal("reply:hi");
+    }
+
+    private static async Task<List<string>> ReadTexts(IAsyncEnumerable<AgentResponseUpdate> updates)
+    {
+        var texts = new List<string>();
+        await foreach (AgentResponseUpdate update in updates)
+        {
+            texts.Add(update.Text);
+        }
+
+        return texts;
+    }
+
     private sealed class FakeRuntimeFactory(
-        Func<TurnSceneOpSink, string, CancellationToken, Task<string>> run) : IAgentRuntimeFactory
+        Func<TurnSceneOpSink, string, CancellationToken, Task<string>> run,
+        Func<TurnSceneOpSink, string, CancellationToken, IAsyncEnumerable<AgentResponseUpdate>>? runStreaming = null)
+        : IAgentRuntimeFactory
     {
         private readonly object _gate = new();
 
@@ -131,7 +232,10 @@ public class AgentRuntimeStoreTests
             }
 
             var sink = new TurnSceneOpSink();
-            return Task.FromResult(new AgentRuntime(sink, (prompt, token) => run(sink, prompt, token)));
+            return Task.FromResult(new AgentRuntime(
+                sink,
+                (prompt, token) => run(sink, prompt, token),
+                runStreaming is null ? null : (prompt, token) => runStreaming(sink, prompt, token)));
         }
     }
 
