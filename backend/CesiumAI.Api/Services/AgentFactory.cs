@@ -103,7 +103,7 @@ public sealed class AgentFactory : IAgentRuntimeFactory, IDisposable
             AIFunctionFactory.Create(_rawTools.HttpPost)
         ];
 
-        AIAgent agent = _chatClientFactory().AsHarnessAgent(
+        AIAgent agent = new ChatHistorySanitizingChatClient(_chatClientFactory()).AsHarnessAgent(
             CreateHarnessOptions(tools, _skillsProvider),
             loggerFactory: _loggerFactory);
 
