@@ -17,6 +17,7 @@ public abstract record ChatStreamEvent
 public sealed record ChatSessionStreamEvent(
     [property: JsonPropertyName("sessionId")] string SessionId) : ChatStreamEvent
 {
+    [JsonIgnore]
     public override string EventName => "session";
 }
 
@@ -24,6 +25,7 @@ public sealed record ChatSessionStreamEvent(
 public sealed record ChatDeltaStreamEvent(
     [property: JsonPropertyName("text")] string Text) : ChatStreamEvent
 {
+    [JsonIgnore]
     public override string EventName => "delta";
 }
 
@@ -32,6 +34,7 @@ public sealed record ChatToolCallStreamEvent(
     [property: JsonPropertyName("callId")] string CallId,
     [property: JsonPropertyName("name")] string Name) : ChatStreamEvent
 {
+    [JsonIgnore]
     public override string EventName => "tool_call";
 }
 
@@ -40,6 +43,7 @@ public sealed record ChatToolResultStreamEvent(
     [property: JsonPropertyName("callId")] string CallId,
     [property: JsonPropertyName("succeeded")] bool Succeeded) : ChatStreamEvent
 {
+    [JsonIgnore]
     public override string EventName => "tool_result";
 }
 
@@ -52,6 +56,7 @@ public sealed record ChatDoneStreamEvent(
     [property: JsonPropertyName("message")] string Message,
     [property: JsonPropertyName("sceneOps")] IReadOnlyList<SceneOp> SceneOps) : ChatStreamEvent
 {
+    [JsonIgnore]
     public override string EventName => "done";
 }
 
@@ -60,5 +65,6 @@ public sealed record ChatErrorStreamEvent(
     [property: JsonPropertyName("error")] string Error,
     [property: JsonPropertyName("detail")] string Detail) : ChatStreamEvent
 {
+    [JsonIgnore]
     public override string EventName => "error";
 }

@@ -104,6 +104,7 @@ public sealed class ChatControllerTests(ApiFactory factory) : IClassFixture<ApiF
 
         events.Select(e => e.Name).Should().Equal(
             "session", "delta", "tool_call", "tool_result", "delta", "done");
+        events.Should().AllSatisfy(e => e.Data.TryGetProperty("eventName", out _).Should().BeFalse());
         events[0].Data.GetProperty("sessionId").GetString().Should().Be("test-session");
         events[1].Data.GetProperty("text").GetString().Should().Be("已清空");
         events[2].Data.GetProperty("callId").GetString().Should().Be("call-1");
