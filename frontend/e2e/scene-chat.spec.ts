@@ -127,6 +127,33 @@ function response(
   return { sessionId: "acceptance-session", message, sceneOps };
 }
 
+function sseFrame(event: string, data: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+/**
+ * 把确定性 ChatResponse 编码为 `POST /api/chat/stream` 的 SSE 体：
+ * session → 文本分两段 delta → （有场景操作时）一次模拟工具调用 → done。
+ */
+function toEventStream(chatResponse: ChatResponse): string {
+  const middle = Math.ceil(chatResponse.message.length / 2);
+  const frames = [
+    sseFrame("session", { sessionId: chatResponse.sessionId }),
+    sseFrame("delta", { text: chatResponse.message.slice(0, middle) }),
+  ];
+  if (chatResponse.sceneOps.length > 0) {
+    frames.push(
+      sseFrame("tool_call", { callId: "e2e-call", name: "E2eSceneTool" }),
+      sseFrame("tool_result", { callId: "e2e-call", succeeded: true }),
+    );
+  }
+  frames.push(
+    sseFrame("delta", { text: chatResponse.message.slice(middle) }),
+    sseFrame("done", chatResponse),
+  );
+  return frames.join("");
+}
+
 async function expectSceneContext(request: ChatRequest) {
   expect(request.sceneSummary).toEqual(
     expect.objectContaining({ entities: expect.any(Array) }),
@@ -186,13 +213,38 @@ async function openApp(
   const isBenignCesiumSandboxError = (text: string) =>
     text.includes("Blocked script execution in 'about:blank'") &&
     text.includes("sandboxed");
+  // 未配置 VITE_CESIUM_ION_TOKEN 时 Cesium 使用内置默认 ion token；该 token 过期后
+  // api.cesium.com 会返回 401，Cesium 随之打印 RequestErrorEvent。这只与外部底图服务有关，
+  // 因此仅在确实观测到 ion 401 响应后才忽略这两类消息，其余 console error 仍判失败。
+  let cesiumIonUnauthorized = false;
+  page.on("response", (response) => {
+    if (
+      response.status() === 401 &&
+      new URL(response.url()).hostname === "api.cesium.com"
+    ) {
+      cesiumIonUnauthorized = true;
+    }
+  });
+  const isCesiumIonAuthError = (message: ConsoleMessage) => {
+    if (!cesiumIonUnauthorized) {
+      return false;
+    }
+    const text = message.text();
+    const location = message.location().url;
+    return (
+      text === "RequestErrorEvent" ||
+      (text.includes("status of 401") &&
+        location !== "" &&
+        new URL(location).hostname === "api.cesium.com")
+    );
+  };
   const captureConsoleError = (message: ConsoleMessage) => {
     if (message.type() !== "error") {
       return;
     }
     const text = message.text();
     // 典型 widgets（infoBox 等）使用 sandboxed iframe，Playwright 会报无害脚本拦截。
-    if (isBenignCesiumSandboxError(text)) {
+    if (isBenignCesiumSandboxError(text) || isCesiumIonAuthError(message)) {
       return;
     }
     browserErrors.push(text);
@@ -204,12 +256,24 @@ async function openApp(
       browserErrors.push(error.message);
     }
   });
+  // 页面必须走流式端点；若误用非流式 POST /api/chat 则记录为错误。
   await page.route("**/api/chat", async (route) => {
+    browserErrors.push(`unexpected non-streaming request: ${route.request().url()}`);
+    await route.abort();
+  });
+  await page.route("**/api/chat/stream", async (route) => {
     expect(route.request().method()).toBe("POST");
     const request = route.request().postDataJSON() as ChatRequest;
     requests.push(request);
     await expectSceneContext(request);
-    await route.fulfill({ json: handler(request) });
+    await route.fulfill({
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache",
+      },
+      body: toEventStream(handler(request)),
+    });
   });
 
   await page.goto("/");
