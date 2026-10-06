@@ -187,7 +187,8 @@ export function App({
       setSessionId(response.sessionId);
       assistantVisible = true;
       upsertMessage({ id: assistantId, role: "assistant", text: response.message });
-      setActivity(null);
+      // 相机飞行等场景操作可能耗时数秒，此时回复已完整，状态改为提示正在更新场景。
+      setActivity(response.sceneOps.length > 0 ? "正在更新场景…" : null);
       await sceneManager.applySceneOps(response.sceneOps);
       if (testDiagnosticsEnabled) {
         setSceneDiagnostics(sceneManager.getSceneDiagnostics());

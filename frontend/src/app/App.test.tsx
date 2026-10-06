@@ -298,7 +298,12 @@ function deferred() {
 
 it("renders streamed deltas and tool activity progressively, then applies sceneOps once on done", async () => {
   const user = userEvent.setup();
-  const manager = createManager();
+  const applied = deferred();
+  const manager = createManager({
+    applySceneOps: vi.fn(async () => {
+      await applied.promise;
+    }),
+  });
   const afterDelta = deferred();
   const afterTool = deferred();
   const finish = deferred();
@@ -338,8 +343,10 @@ it("renders streamed deltas and tool activity progressively, then applies sceneO
   expect(manager.applySceneOps).not.toHaveBeenCalled();
 
   finish.resolve();
+  expect(await screen.findByRole("status")).toHaveTextContent("正在更新场景…");
   await waitFor(() => expect(manager.applySceneOps).toHaveBeenCalledOnce());
   expect(manager.applySceneOps).toHaveBeenCalledWith(sceneOps);
+  applied.resolve();
   const final = screen.getByText("正在清空场景。");
   expect(final.closest('[data-role="assistant"]')).not.toHaveAttribute(
     "data-streaming",
