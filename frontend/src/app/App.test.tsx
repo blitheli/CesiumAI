@@ -288,6 +288,68 @@ it("clear + 畸形 focus 在 streamChat 阶段整体拒绝，manager 完全不�
   vi.unstubAllGlobals();
 });
 
+it("同一会话多轮流式：工具轮之后的出错轮不影响下一轮，sessionId 全程沿用", async () => {
+  const user = userEvent.setup();
+  const manager = createManager();
+  const { streamChat } = await import("../api/chat");
+  const sse = (...frames: [string, unknown][]) =>
+    new Response(
+      frames
+        .map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+        .join(""),
+      { headers: { "Content-Type": "text/event-stream" } },
+    );
+  const sceneOps: ChatResponse["sceneOps"] = [{ op: "clear" }];
+  const fetchMock = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(
+      sse(
+        ["session", { sessionId: "s-multi" }],
+        ["tool_call", { callId: "c1", name: "AddSatelliteJ2" }],
+        ["tool_result", { callId: "c1", succeeded: true }],
+        ["delta", { text: "已创建轨道。" }],
+        ["done", { sessionId: "s-multi", message: "已创建轨道。", sceneOps }],
+      ),
+    )
+    .mockResolvedValueOnce(
+      sse(
+        ["session", { sessionId: "s-multi" }],
+        ["error", { error: "agent_error", detail: "Agent request failed." }],
+      ),
+    )
+    .mockResolvedValueOnce(
+      sse(
+        ["session", { sessionId: "s-multi" }],
+        ["delta", { text: "约 550 km。" }],
+        ["done", { sessionId: "s-multi", message: "约 550 km。", sceneOps: [] }],
+      ),
+    );
+  vi.stubGlobal("fetch", fetchMock);
+  renderApp(manager, streamChat);
+  const input = screen.getByLabelText("消息");
+
+  await user.type(input, "创建900km高度太阳同步轨道{Enter}");
+  expect(await screen.findByText("已创建轨道。")).toBeInTheDocument();
+  await waitFor(() => expect(manager.applySceneOps).toHaveBeenCalledWith(sceneOps));
+  await waitFor(() => expect(input).toBeEnabled());
+
+  await user.type(input, "典型星链卫星的轨道{Enter}");
+  expect(await screen.findByRole("alert")).toHaveTextContent("Agent request failed.");
+  await waitFor(() => expect(input).toBeEnabled());
+
+  await user.type(input, "星链卫星轨道高度？{Enter}");
+  expect(await screen.findByText("约 550 km。")).toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  await waitFor(() => expect(input).toBeEnabled());
+
+  const sentSessionIds = fetchMock.mock.calls.map(
+    ([, init]) => (JSON.parse(String(init?.body)) as ChatRequest).sessionId,
+  );
+  expect(sentSessionIds).toEqual([null, "s-multi", "s-multi"]);
+  expect(vi.mocked(manager.applySceneOps).mock.calls).toEqual([[sceneOps], [[]]]);
+  vi.unstubAllGlobals();
+});
+
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => {
