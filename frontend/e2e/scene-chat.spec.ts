@@ -312,6 +312,63 @@ test("header subtitle shows the latest CHANGES.md date", async ({ page }) => {
   expect(browserErrors).toEqual([]);
 });
 
+test("assistant replies render GFM Markdown safely inside the chat panel", async ({
+  page,
+}) => {
+  const markdown = [
+    "已查询 **国际空间站** 的轨道参数（实体 `iss`）：",
+    "",
+    "| 参数 | 值 | 说明 |",
+    "| --- | --- | --- |",
+    "| 轨道高度 | 约 420 km | 近地轨道，受大气阻力影响需要定期抬升 |",
+    "| 轨道倾角 | 51.64° | 覆盖南北纬 51.6° 之间的大部分人口区域 |",
+    "",
+    "- 来源：[Celestrak](https://celestrak.org/)",
+    "- 原样 <img src=x onerror=\"window.__xss = true\">",
+    "",
+    "```json",
+    '{ "op": "camera", "action": "track" }',
+    "```",
+  ].join("\n");
+  const { browserErrors } = await openApp(page, () => response(markdown));
+
+  await sendCommand(page, "查询 **iss** 参数", "国际空间站");
+
+  const assistant = page.locator('[data-role="assistant"]').last();
+  await expect(assistant.locator("strong")).toHaveText("国际空间站");
+  await expect(assistant.locator("p code")).toHaveText("iss");
+  await expect(assistant.getByRole("columnheader", { name: "参数" })).toBeVisible();
+  await expect(assistant.getByRole("cell", { name: "51.64°" })).toBeVisible();
+  await expect(assistant.locator("pre code")).toContainText('"action": "track"');
+  const link = assistant.getByRole("link", { name: "Celestrak" });
+  await expect(link).toHaveAttribute("target", "_blank");
+  await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  await expect(assistant).toContainText("<img src=x onerror=");
+  await expect(assistant.locator("img")).toHaveCount(0);
+  expect(await page.evaluate(() => "__xss" in window)).toBe(false);
+  await expect(assistant).not.toHaveAttribute("data-streaming");
+
+  // 宽表格在窄聊天面板内横向滚动，不撑破气泡或面板。
+  const scroll = assistant.locator(".message-table-scroll");
+  const sizes = await scroll.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+    overflowX: getComputedStyle(element).overflowX,
+    panelWidth: element.closest(".chat-panel")!.getBoundingClientRect().width,
+    bubbleRight: element.closest(".message-bubble")!.getBoundingClientRect().right,
+    panelRight: element.closest(".chat-panel")!.getBoundingClientRect().right,
+  }));
+  expect(sizes.overflowX).toBe("auto");
+  expect(sizes.scrollWidth).toBeGreaterThan(sizes.clientWidth);
+  expect(sizes.bubbleRight).toBeLessThanOrEqual(sizes.panelRight);
+
+  // 用户消息保持纯文本。
+  await expect(page.locator('[data-role="user"]').last()).toHaveText(
+    /查询 \*\*iss\*\* 参数/,
+  );
+  expect(browserErrors).toEqual([]);
+});
+
 test("clear resets the scene while the Cesium canvas stays mounted", async ({
   page,
 }) => {

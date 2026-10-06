@@ -1,4 +1,5 @@
 import { useState, type FormEvent, type KeyboardEvent } from "react";
+import { MessageContent } from "./MessageContent";
 
 export type UiMessage = {
   id: string;
@@ -71,7 +72,7 @@ export function ChatPanel({
             <span className="message-label">
               {message.role === "user" ? "你" : "助手"}
             </span>
-            <p>{message.text}</p>
+            <MessageContent role={message.role} text={message.text} />
           </div>
         ))}
       </div>
