@@ -127,6 +127,33 @@ function response(
   return { sessionId: "acceptance-session", message, sceneOps };
 }
 
+function sseFrame(event: string, data: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+/**
+ * 把确定性 ChatResponse 编码为 `POST /api/chat/stream` 的 SSE 体：
+ * session → 文本分两段 delta → （有场景操作时）一次模拟工具调用 → done。
+ */
+function toEventStream(chatResponse: ChatResponse): string {
+  const middle = Math.ceil(chatResponse.message.length / 2);
+  const frames = [
+    sseFrame("session", { sessionId: chatResponse.sessionId }),
+    sseFrame("delta", { text: chatResponse.message.slice(0, middle) }),
+  ];
+  if (chatResponse.sceneOps.length > 0) {
+    frames.push(
+      sseFrame("tool_call", { callId: "e2e-call", name: "E2eSceneTool" }),
+      sseFrame("tool_result", { callId: "e2e-call", succeeded: true }),
+    );
+  }
+  frames.push(
+    sseFrame("delta", { text: chatResponse.message.slice(middle) }),
+    sseFrame("done", chatResponse),
+  );
+  return frames.join("");
+}
+
 async function expectSceneContext(request: ChatRequest) {
   expect(request.sceneSummary).toEqual(
     expect.objectContaining({ entities: expect.any(Array) }),
@@ -177,6 +204,36 @@ async function sendCommand(
   await expectSameCanvas(page);
 }
 
+/**
+ * 未配置 VITE_CESIUM_ION_TOKEN 时，Cesium 会用内置默认 ion token 请求底图资产端点，
+ * 该 token 过期后返回 401 并产生 console error，使 e2e 依赖外部服务状态。
+ * 此时把 ion 资产端点 stub 成指向 Cesium 自带离线 NaturalEarthII 瓦片（由 Vite 在 /cesium 提供）的
+ * 无 externalType 影像端点，Cesium 会按 TMS 加载本地瓦片。其他 ion 请求不拦截，若出现会照常暴露。
+ * 配置了 token 时不做任何拦截，直接使用真实 ion。
+ */
+async function stubCesiumIonWithoutToken(page: Page) {
+  if (process.env.VITE_CESIUM_ION_TOKEN) {
+    return;
+  }
+
+  const baseURL = test.info().project.use.baseURL ?? "http://127.0.0.1:5173";
+  const offlineImageryUrl = new URL(
+    "/cesium/Assets/Textures/NaturalEarthII/",
+    baseURL,
+  ).href;
+
+  await page.route("https://api.cesium.com/v1/assets/*/endpoint**", (route) =>
+    route.fulfill({
+      json: {
+        type: "IMAGERY",
+        url: offlineImageryUrl,
+        accessToken: "e2e-offline",
+        attributions: [],
+      },
+    }),
+  );
+}
+
 async function openApp(
   page: Page,
   handler: (request: ChatRequest) => ChatResponse,
@@ -204,12 +261,25 @@ async function openApp(
       browserErrors.push(error.message);
     }
   });
+  await stubCesiumIonWithoutToken(page);
+  // 页面必须走流式端点；若误用非流式 POST /api/chat 则记录为错误。
   await page.route("**/api/chat", async (route) => {
+    browserErrors.push(`unexpected non-streaming request: ${route.request().url()}`);
+    await route.abort();
+  });
+  await page.route("**/api/chat/stream", async (route) => {
     expect(route.request().method()).toBe("POST");
     const request = route.request().postDataJSON() as ChatRequest;
     requests.push(request);
     await expectSceneContext(request);
-    await route.fulfill({ json: handler(request) });
+    await route.fulfill({
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache",
+      },
+      body: toEventStream(handler(request)),
+    });
   });
 
   await page.goto("/");

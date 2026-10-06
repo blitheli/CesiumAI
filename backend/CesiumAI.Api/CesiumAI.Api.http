@@ -12,3 +12,19 @@ Content-Type: application/json
   },
   "relevantPackets": []
 }
+
+###
+
+# 流式（SSE）：响应为 text/event-stream，事件依次为 session → delta / tool_call / tool_result → done 或 error
+POST {{CesiumAI.Api_HostAddress}}/api/chat/stream
+Accept: text/event-stream
+Content-Type: application/json
+
+{
+  "message": "清空当前场景",
+  "sessionId": null,
+  "sceneSummary": {
+    "entities": []
+  },
+  "relevantPackets": []
+}

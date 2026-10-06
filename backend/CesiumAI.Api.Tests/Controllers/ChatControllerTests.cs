@@ -89,6 +89,94 @@ public sealed class ChatControllerTests(ApiFactory factory) : IClassFixture<ApiF
     }
 
     [Fact]
+    public async Task PostChatStream_StreamsServerSentEventsEndingWithDone()
+    {
+        using HttpResponseMessage response = await _client.PostAsJsonAsync(
+            "/api/chat/stream",
+            CreateRequest("清空当前场景"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.Content.Headers.ContentType!.MediaType.Should().Be("text/event-stream");
+        response.Headers.CacheControl!.NoCache.Should().BeTrue();
+
+        List<(string Name, JsonElement Data)> events = ParseEvents(
+            await response.Content.ReadAsStringAsync());
+
+        events.Select(e => e.Name).Should().Equal(
+            "session", "delta", "tool_call", "tool_result", "delta", "done");
+        events.Should().AllSatisfy(e => e.Data.TryGetProperty("eventName", out _).Should().BeFalse());
+        events[0].Data.GetProperty("sessionId").GetString().Should().Be("test-session");
+        events[1].Data.GetProperty("text").GetString().Should().Be("已清空");
+        events[2].Data.GetProperty("callId").GetString().Should().Be("call-1");
+        events[2].Data.GetProperty("name").GetString().Should().Be("ClearScene");
+        events[3].Data.GetProperty("succeeded").GetBoolean().Should().BeTrue();
+        events[4].Data.GetProperty("text").GetString().Should().Be("场景。\n第二行");
+        JsonElement done = events[5].Data;
+        done.GetProperty("sessionId").GetString().Should().Be("test-session");
+        done.GetProperty("message").GetString().Should().Be("已清空场景。\n第二行");
+        done.GetProperty("sceneOps")[0].GetProperty("op").GetString().Should().Be("clear");
+    }
+
+    [Fact]
+    public async Task PostChatStream_WithWhitespaceMessage_ReturnsBadRequestBeforeStreaming()
+    {
+        using HttpResponseMessage response = await _client.PostAsJsonAsync(
+            "/api/chat/stream",
+            CreateRequest("   "));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        response.Content.Headers.ContentType!.MediaType.Should().NotBe("text/event-stream");
+    }
+
+    [Fact]
+    public async Task PostChatStream_WhenAgentTimesOut_EmitsTimeoutErrorEvent()
+    {
+        using HttpResponseMessage response = await _client.PostAsJsonAsync(
+            "/api/chat/stream",
+            CreateRequest("触发超时"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        List<(string Name, JsonElement Data)> events = ParseEvents(
+            await response.Content.ReadAsStringAsync());
+
+        events.Select(e => e.Name).Should().Equal("session", "error");
+        events[1].Data.GetProperty("error").GetString().Should().Be("agent_timeout");
+        events[1].Data.GetProperty("detail").GetString()
+            .Should().Be("Agent request exceeded 0.025 seconds.");
+    }
+
+    [Fact]
+    public async Task PostChatStream_WhenAgentThrows_EmitsAgentErrorEventWithoutDone()
+    {
+        using HttpResponseMessage response = await _client.PostAsJsonAsync(
+            "/api/chat/stream",
+            CreateRequest("触发异常"));
+
+        List<(string Name, JsonElement Data)> events = ParseEvents(
+            await response.Content.ReadAsStringAsync());
+
+        events.Select(e => e.Name).Should().Equal("session", "delta", "error");
+        events[2].Data.GetProperty("error").GetString().Should().Be("agent_error");
+        events[2].Data.GetProperty("detail").GetString().Should().Be("agent exploded");
+    }
+
+    [Fact]
+    public async Task PostChatStream_InProduction_HidesExceptionDetail()
+    {
+        using var productionFactory = new ApiFactory("Production");
+        using HttpClient client = productionFactory.CreateClient(
+            new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost") });
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/chat/stream",
+            CreateRequest("触发异常"));
+
+        List<(string Name, JsonElement Data)> events = ParseEvents(
+            await response.Content.ReadAsStringAsync());
+        events[^1].Data.GetProperty("detail").GetString().Should().Be("Agent request failed.");
+    }
+
+    [Fact]
     public async Task DevelopmentCors_AllowsViteOrigin()
     {
         using HttpRequestMessage request = CreatePreflightRequest("http://localhost:5173");
@@ -179,6 +267,20 @@ public sealed class ChatControllerTests(ApiFactory factory) : IClassFixture<ApiF
 
         forwardedResponse.StatusCode.Should().Be(HttpStatusCode.OK);
         forwardedResponse.Headers.Location.Should().BeNull();
+    }
+
+    private static List<(string Name, JsonElement Data)> ParseEvents(string body)
+    {
+        var events = new List<(string Name, JsonElement Data)>();
+        foreach (string frame in body.Split("\n\n", StringSplitOptions.RemoveEmptyEntries))
+        {
+            string[] lines = frame.Split('\n');
+            string name = lines.Single(line => line.StartsWith("event: ", StringComparison.Ordinal))["event: ".Length..];
+            string data = lines.Single(line => line.StartsWith("data: ", StringComparison.Ordinal))["data: ".Length..];
+            events.Add((name, JsonDocument.Parse(data).RootElement.Clone()));
+        }
+
+        return events;
     }
 
     private static object CreateRequest(string message) =>

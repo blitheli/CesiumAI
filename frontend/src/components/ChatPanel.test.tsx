@@ -138,3 +138,30 @@ it("announces errors", () => {
 
   expect(screen.getByRole("alert")).toHaveTextContent("请求失败");
 });
+
+it("shows streaming activity in the status and marks the streaming message busy", () => {
+  renderPanel({
+    loading: true,
+    activity: "正在调用工具 ClearScene…",
+    messages: [
+      { id: "assistant-1", role: "assistant", text: "正在清", streaming: true },
+    ],
+  });
+
+  expect(screen.getByRole("status")).toHaveTextContent("正在调用工具 ClearScene…");
+  const message = screen.getByText("正在清").closest('[data-role="assistant"]');
+  expect(message).toHaveAttribute("data-streaming", "true");
+  expect(message).toHaveAttribute("aria-busy", "true");
+});
+
+it("falls back to the generic status without activity and drops busy state when done", () => {
+  renderPanel({
+    loading: true,
+    messages: [{ id: "assistant-1", role: "assistant", text: "完成" }],
+  });
+
+  expect(screen.getByRole("status")).toHaveTextContent("正在处理…");
+  const message = screen.getByText("完成").closest('[data-role="assistant"]');
+  expect(message).not.toHaveAttribute("data-streaming");
+  expect(message).not.toHaveAttribute("aria-busy");
+});

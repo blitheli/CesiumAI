@@ -136,3 +136,19 @@ export type ChatResponse = {
   /** 场景变更意图；可为 `[]`。 */
   sceneOps: SceneOp[];
 };
+
+/**
+ * `POST /api/chat/stream`（SSE）事件；请求体与 `ChatRequest` 相同。
+ * 线格式：`event: <type>` + 单行 JSON `data:`，与后端 `ChatStreamEvents` 对齐。
+ *
+ * 顺序：`session` → (`delta` | `tool_call` | `tool_result`)* → `done` | `error`。
+ * - `delta.text` 按序拼接即完整回复；`done.message` 与之相同，作为最终权威文本。
+ * - `sceneOps` 只在 `done` 中一次性下发（本轮成功结束才应用，失败/超时不留半套场景）。
+ */
+export type ChatStreamEvent =
+  | { type: "session"; sessionId: string }
+  | { type: "delta"; text: string }
+  | { type: "tool_call"; callId: string; name: string }
+  | { type: "tool_result"; callId: string; succeeded: boolean }
+  | ({ type: "done" } & ChatResponse)
+  | { type: "error"; error: string; detail: string };

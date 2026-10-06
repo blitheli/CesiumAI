@@ -147,6 +147,26 @@ textarea {
   white-space: pre-wrap;
 }
 
+/* 流式输出中：文本末尾显示闪烁光标 */
+.message-streaming p::after {
+  content: "▍";
+  margin-left: 2px;
+  color: #6fb3ff;
+  animation: message-caret-blink 1s steps(1) infinite;
+}
+
+@keyframes message-caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message-streaming p::after {
+    animation: none;
+  }
+}
+
 .message-user p {
   border-color: #245c78;
   background: #123d55;

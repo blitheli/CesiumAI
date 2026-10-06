@@ -202,7 +202,7 @@ curl.exe --fail http://127.0.0.1:8791/healthz
 
 ### 生产入口：同源反代（必做）
 
-生产构建**不设置** `VITE_API_BASE_URL`，浏览器会向**前端站点同源**请求 `POST /api/chat`。  
+生产构建**不设置** `VITE_API_BASE_URL`，浏览器会向**前端站点同源**请求 `POST /api/chat/stream`（SSE 流式；非流式 `POST /api/chat` 仍保留）。  
 因此即使用「前端 / 后端两个 IIS 网站」，对外也应只打开前端域名，并由前端站点把 `/api`、`/healthz` 反代到后端。否则会出现：后端 `/healthz` 正常，但聊天界面 `Chat request failed 404`。
 
 仓库已提供前端 IIS 配置模板：`frontend/public/web.config`（构建后进入 `dist/web.config`，随「部署前端」上传到 `D:\IIS\ASTROX.CesiumAI.frontend`）。其中反代目标为 `http://127.0.0.1:8791`（阿里云后端站点端口）；若你本机绑定不同，请改该文件后再部署。
@@ -236,7 +236,16 @@ curl.exe --fail http://127.0.0.1:8791/healthz
 curl.exe --fail https://你的前端域名/healthz
 ```
 
-应返回 `Healthy`。浏览器 F12 → Network 中 `POST /api/chat` 不应再是 404。
+应返回 `Healthy`。浏览器 F12 → Network 中 `POST /api/chat/stream` 不应再是 404。
+
+#### SSE 流式与反向代理缓冲
+
+前端聊天走 `POST /api/chat/stream`（`text/event-stream`）。后端已发送 `Cache-Control: no-cache, no-transform` 与 `X-Accel-Buffering: no` 并逐事件 flush，但反代层仍可能把整段响应攒到结束才转发，表现为“回复最后一次性出现”。部署时请确认：
+
+- **IIS + ARR**：服务器节点 → Application Request Routing Cache → Server Proxy Settings → **Response buffer threshold (KB)** 设为 `0`；并确保动态压缩不作用于 `text/event-stream`（压缩会缓冲整段响应）。
+- **Nginx**：`X-Accel-Buffering: no` 已足够；也可在 `location /api/` 中显式 `proxy_buffering off;`。
+
+可用 `curl -N -X POST https://你的前端域名/api/chat/stream -H "Content-Type: application/json" -d '{"message":"你好","sceneSummary":{"entities":[]}}'` 观察事件是否逐条到达。
 
 #### Nginx 示例（非 IIS 时）
 
@@ -309,7 +318,7 @@ npm run e2e
 npm run lint
 ```
 
-`npm run e2e` 会自行启动 `http://127.0.0.1:5173` 上的 Vite，并拦截 `POST /api/chat`。Playwright 场景使用确定性响应，不访问 live LLM 或 Astrox；覆盖清空、添加/更新地面站、SSO/J2 卫星，以及相机定位/跟随/相对微调/单次与持续环绕/停止、ISS 样式修改后 Position 保留。验收通过**测试专用**只读 diagnostics（`VITE_ENABLE_TEST_DIAGNOSTICS=true`，由 Playwright `webServer` 注入；含 `data-scene-diagnostics` 与 `window.__CESIUM_AI_READ_DIAGNOSTICS__`）观测 tracked entity、orbit 状态、相机 heading/位置与样式，不绕过真实相机控制器。正常 `npm run build` / 生产构建不得设置该变量，因此不会暴露 diagnostics UI 或 window 全局。同时检查 Cesium canvas 持久存在且无 console error。
+`npm run e2e` 会自行启动 `http://127.0.0.1:5173` 上的 Vite，并拦截 `POST /api/chat/stream`，以 SSE 事件流（`session` → `delta` → `tool_call`/`tool_result` → `delta` → `done`）返回；误用非流式 `POST /api/chat` 视为失败。Playwright 场景使用确定性响应，不访问 live LLM 或 Astrox；覆盖清空、添加/更新地面站、SSO/J2 卫星，以及相机定位/跟随/相对微调/单次与持续环绕/停止、ISS 样式修改后 Position 保留。验收通过**测试专用**只读 diagnostics（`VITE_ENABLE_TEST_DIAGNOSTICS=true`，由 Playwright `webServer` 注入；含 `data-scene-diagnostics` 与 `window.__CESIUM_AI_READ_DIAGNOSTICS__`）观测 tracked entity、orbit 状态、相机 heading/位置与样式，不绕过真实相机控制器。正常 `npm run build` / 生产构建不得设置该变量，因此不会暴露 diagnostics UI 或 window 全局。同时检查 Cesium canvas 持久存在且无任何 console error。底图：若运行 e2e 的 shell 设置了 `VITE_CESIUM_ION_TOKEN`（Playwright 会透传给 Vite），使用真实 Cesium ion；未设置时，e2e 把 ion 资产端点 stub 为 Cesium 自带的离线 NaturalEarthII 瓦片，避免依赖内置默认 token 的有效期与外网。
 
 首次运行或 Playwright 升级后，如 Chromium 尚未安装：
 

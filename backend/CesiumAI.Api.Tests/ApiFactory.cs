@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using CesiumAI.Api.Configuration;
 using CesiumAI.Api.Models;
 using CesiumAI.Api.Services;
@@ -119,6 +120,35 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             return new ChatResponse(
                 "test-session",
                 "已清空场景。",
+                [new ClearSceneOp()]);
+        }
+
+        public async IAsyncEnumerable<ChatStreamEvent> StreamAsync(
+            ChatRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return new ChatSessionStreamEvent("test-session");
+
+            if (request.Message == "触发超时")
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                throw new InvalidOperationException("The timeout delay unexpectedly completed.");
+            }
+
+            if (request.Message == "触发异常")
+            {
+                yield return new ChatDeltaStreamEvent("部分");
+                throw new InvalidOperationException("agent exploded");
+            }
+
+            yield return new ChatDeltaStreamEvent("已清空");
+            yield return new ChatToolCallStreamEvent("call-1", "ClearScene");
+            yield return new ChatToolResultStreamEvent("call-1", Succeeded: true);
+            yield return new ChatDeltaStreamEvent("场景。\n第二行");
+            yield return new ChatDoneStreamEvent(
+                "test-session",
+                "已清空场景。\n第二行",
                 [new ClearSceneOp()]);
         }
     }
