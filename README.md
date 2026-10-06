@@ -23,7 +23,7 @@ cd ..
 
 ### 安装 astrox-skills（Git submodule）
 
-`astrox-skills` 以 Git submodule 形式位于 `backend/astrox-skills`（仅作版本化来源）。构建时同步到 API content root 内的 `backend/CesiumAI.Api/skills/`；Agent 默认从该内部目录加载（`Skills:Path=skills`）。
+`astrox-skills` 以 Git submodule 形式位于 `backend/astrox-skills`（仅作版本化来源，上游为公开仓库 `https://github.com/blitheli/astrox-skills.git`）。构建时同步到 API content root 内的 `backend/CesiumAI.Api/skills/`；Agent 默认从该内部目录加载（`Skills:Path=skills`）。
 
 新 clone：
 
@@ -36,6 +36,8 @@ git clone --recurse-submodules <repo-url>
 ```bash
 git submodule update --init --recursive
 ```
+
+若该 clone 曾使用旧的 gitee 上游，先执行 `git submodule sync --recursive` 让本地 submodule 远程地址与 `.gitmodules` 一致，再执行上面的更新命令。
 
 `backend/CesiumAI.Api/skills/` 由构建生成且已 gitignore，勿手改或提交。若本机 User Secrets 仍覆盖旧的 `Skills:Path`（如 `../astrox-skills/skills`），请删除该覆盖以免盖过默认值。
 

@@ -5,7 +5,7 @@
 
 ## 背景
 
-当前 MVP 采用 PRD 决策 F3：手动把 `https://gitee.com/blitheli/astrox-skills.git` 的 `skills/` 复制到 `backend/skills/`，并在 `.gitignore` 中忽略该目录。云端或新机器 clone 主仓后没有 skills，后端启动会因 `Skills:Path` 目录不存在而失败。
+当前 MVP 采用 PRD 决策 F3：手动把 `https://github.com/blitheli/astrox-skills.git` 的 `skills/` 复制到 `backend/skills/`，并在 `.gitignore` 中忽略该目录。云端或新机器 clone 主仓后没有 skills，后端启动会因 `Skills:Path` 目录不存在而失败。
 
 目标：升级为 F1（Git submodule），使 `git clone --recurse-submodules` / `git submodule update --init` 即可获得 skills，本地与云端行为一致。
 
@@ -26,7 +26,7 @@
 ### Git
 
 1. 添加 submodule：
-   - URL：`https://gitee.com/blitheli/astrox-skills.git`
+   - URL：`https://github.com/blitheli/astrox-skills.git`
    - 路径：`backend/astrox-skills`
    - 固定当前上游 `HEAD`（或添加时解析到的 commit）
 2. 生成/更新 `.gitmodules`
@@ -84,7 +84,7 @@ cp -R backend/astrox-skills/skills/. publish/skills/
 
 ## 验收标准
 
-1. `.gitmodules` 存在，且 `backend/astrox-skills` 指向 gitee 上游
+1. `.gitmodules` 存在，且 `backend/astrox-skills` 指向 GitHub 上游
 2. `git submodule status` 显示已 checkout 的 commit
 3. `dotnet test`（后端测试项目）通过
 4. 在 submodule 已初始化前提下，默认 `Skills:Path` 能解析到存在的目录
@@ -96,7 +96,7 @@ cp -R backend/astrox-skills/skills/. publish/skills/
 | 风险 | 对策 |
 |---|---|
 | 忘记 `--recurse-submodules` | README 明确；启动时 DirectoryNotFound 错误已存在且清晰 |
-| gitee 不可达 | 与当前 F3 相同外部依赖；固定 commit 至少保证版本可复现 |
+| GitHub 不可达 | 与当前 F3 相同外部依赖；固定 commit 至少保证版本可复现 |
 | 本地仍有旧 `backend/skills` | 文档提示删除；默认配置不再指向该路径 |
 | 用户已设 User Secret `Skills:Path=../skills` | README 提示更新为 `../astrox-skills/skills` 或删除覆盖 |
 
