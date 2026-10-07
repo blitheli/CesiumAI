@@ -4,7 +4,7 @@
 
 **Goal:** 将 `astrox-skills` 从 F3 手动复制改为 F1 Git submodule，使 clone / CI 可复现获得 skills。
 
-**Architecture:** 在 `backend/astrox-skills` 添加指向 `https://gitee.com/blitheli/astrox-skills.git` 的 submodule；默认 `Skills:Path` 改为 `../astrox-skills/skills`；发布时仍复制到 `publish/skills`，运行时用 `../skills`。
+**Architecture:** 在 `backend/astrox-skills` 添加指向 `https://github.com/blitheli/astrox-skills.git` 的 submodule；默认 `Skills:Path` 改为 `../astrox-skills/skills`；发布时仍复制到 `publish/skills`，运行时用 `../skills`。
 
 **Tech Stack:** Git submodule、.NET 配置（`SkillsOptions` / `appsettings.json`）、xUnit 测试、Markdown 文档。
 
@@ -59,7 +59,7 @@ if (Test-Path backend/skills) {
 - [ ] **Step 2: 添加 submodule**
 
 ```powershell
-git submodule add https://gitee.com/blitheli/astrox-skills.git backend/astrox-skills
+git submodule add https://github.com/blitheli/astrox-skills.git backend/astrox-skills
 git submodule status
 ```
 

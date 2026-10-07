@@ -13,7 +13,7 @@ CesiumAI 是双层应用：ASP.NET Core（.NET 10）后端 API 与 React + Cesiu
 
 ### 工具链 / 环境
 
-- 环境由 Cursor Dashboard 中保存的 `install` 脚本准备（不依赖基础快照预装）：幂等安装 `.NET 10 SDK` 到 `/usr/local/dotnet` 并软链到 `/usr/local/bin/dotnet`；确保 nvm 下的 Node.js 22 并软链 `node`/`npm`/`npx` 到 `/usr/local/bin`；初始化 skills submodule；在根目录与 `frontend/` 执行 `npm ci`；安装 Playwright Chromium；执行 `dotnet build CesiumAI.slnx` 预热 NuGet。
+- 环境由 Cursor Dashboard 中保存的 `install` 脚本准备（不依赖基础快照预装）：幂等安装 `.NET 10 SDK` 到 `/usr/local/dotnet` 并软链到 `/usr/local/bin/dotnet`；Node.js 22 由 nvm 提供（已在 `PATH` 中）；初始化 skills submodule；在根目录与 `frontend/` 执行 `npm ci`；安装 Playwright Chromium；执行 `dotnet build CesiumAI.slnx` 预热 NuGet。
 - 若 `dotnet` 不存在（例如环境尚未从新 build 启动），手动执行：`curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && sudo mkdir -p /usr/local/dotnet && sudo chown "$(id -u):$(id -g)" /usr/local/dotnet && bash /tmp/dotnet-install.sh --channel 10.0 --install-dir /usr/local/dotnet --no-path && sudo ln -sf /usr/local/dotnet/dotnet /usr/local/bin/dotnet`。
 - `backend/astrox-skills` 为 Git submodule（上游 `https://github.com/blitheli/astrox-skills.git`）。构建时同步到 API content root 内的 `backend/CesiumAI.Api/skills/`（默认 `Skills:Path=skills`）。若 submodule 未初始化，构建/启动会失败；在仓库根目录执行：`git submodule sync --recursive && git submodule update --init --recursive`。
 

@@ -2,7 +2,7 @@
 
 > 状态：已评审定稿（对话决策 A / A2 / B1 / C2 / D2 / E1 / 方案1 / F1）  
 > 日期：2026-07-16  
-> 关联：`Docs/需求初步描述.md`、`https://gitee.com/blitheli/astrox-skills.git`
+> 关联：`Docs/需求初步描述.md`、`https://github.com/blitheli/astrox-skills.git`
 
 ---
 
@@ -47,7 +47,7 @@
 | D2 | MVP 范围：清空 + 地面站增改 + SSO/J2 卫星 |
 | E1 | 同步 `POST /api/chat` |
 | Arch-1 | 薄 ASP.NET API + 每轮 SceneOp 收集器 |
-| Skills | 源仓库 `https://gitee.com/blitheli/astrox-skills.git` |
+| Skills | 源仓库 `https://github.com/blitheli/astrox-skills.git` |
 | F1 | Skills：`backend/astrox-skills` Git submodule；加载 `skills/` |
 
 ---
@@ -339,7 +339,7 @@ OpenAIClient(Kimi/Moonshot endpoint)
 
 ### 7.4 依赖：astrox-skills
 
-- **源仓库**：`https://gitee.com/blitheli/astrox-skills.git`
+- **源仓库**：`https://github.com/blitheli/astrox-skills.git`
 - **内容**：航天动力学算法 SKILLS；`skills/<skill-name>/SKILL.md` + `fixtures/`；公共协议在 `skills/shared-docs/`（含 CZML position 等 schema）；`astrox-web-api.json` 可作为 API 参考
 - **接入（F1）**：以 Git submodule 置于 `backend/astrox-skills`；构建同步到 `CesiumAI.Api/skills/`；`AgentSkillsProvider` 默认 `Skills:Path=skills`
 - **职责划分**：Skill + 泛型 HTTP 用于计算/查询；**写场景**只走强类型场景 Tools
