@@ -19,7 +19,7 @@
 - MVP scene operations are `clear`, `upsert`, and `delete`, executed in response order.
 - MVP commands cover scene clearing, facility add/update/delete, and a 900 km SSO propagated for one day with J2.
 - Chat uses synchronous `POST /api/chat`; SSE and WebSocket are excluded.
-- Astrox skills come from `https://gitee.com/blitheli/astrox-skills.git` and are placed manually under `backend/skills`.
+- Astrox skills come from `https://github.com/blitheli/astrox-skills.git` and are placed manually under `backend/skills`.
 - `AddSatelliteJ2` directly implements the published skill contracts: `POST /OrbitWizard/SSO`, then `POST /Propagator/J2`. Generic HTTP tools remain available for non-scene questions but cannot write `sceneOps`.
 - Use .NET 10 and a currently supported Node.js LTS release (Node.js 22 or newer).
 - Add dependencies through `dotnet add package` and `npm install` without invented version pins so the package manager resolves the latest available stable release.
@@ -1576,7 +1576,7 @@ Expected: all four browser scenarios pass.
 Document exact commands:
 
 ```bash
-git clone https://gitee.com/blitheli/astrox-skills.git /tmp/astrox-skills
+git clone https://github.com/blitheli/astrox-skills.git /tmp/astrox-skills
 mkdir -p backend/skills
 cp -R /tmp/astrox-skills/skills/. backend/skills/
 
