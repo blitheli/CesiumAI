@@ -5,6 +5,7 @@
 
 ## 2026-10-07
 
+- 新增调研报告 `Docs/航天任务Agent调研及技术路径.md`：基于仓库代码盘点 Harness 架构、工具、27 个 skill 与 OpenAPI 覆盖度、SSE 协议、前端 sceneOps 与测试体系；调研 Cesium Agent/MCP、航天动力学工具 Agent 化、.NET→WASM、生成式 UI、Agent Skills 规范；给出三条技术路径（Astrox WebApi + Skills、ASTROX.AeroSpace → WASM、自动 UI 面板）的架构、协议、里程碑、风险与优先级建议（[PR #12](https://github.com/blitheli/CesiumAI/pull/12)）。
 - Cursor Cloud 环境：`install` 脚本改为幂等安装 .NET 10 SDK（此前快照中实际缺失）、Node 22、skills submodule、npm 依赖与 Playwright Chromium；同步修正 `AGENTS.md` 中的环境说明（[PR #11](https://github.com/blitheli/CesiumAI/pull/11)）。
 
 ## 2026-10-06
