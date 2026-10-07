@@ -5,7 +5,7 @@
 
 ## 2026-10-07
 
-- Cursor Cloud 环境：`install` 脚本改为幂等安装 .NET 10 SDK（此前快照中实际缺失）、Node 22、skills submodule、npm 依赖与 Playwright Chromium；`.gitmodules` 中 skills submodule 上游改为 `https://github.com/blitheli/astrox-skills.git`；同步修正 `AGENTS.md` 中的环境说明（PR_LINK）。
+- Cursor Cloud 环境：`install` 脚本改为幂等安装 .NET 10 SDK（此前快照中实际缺失）、Node 22、skills submodule、npm 依赖与 Playwright Chromium；`.gitmodules` 中 skills submodule 上游改为 `https://github.com/blitheli/astrox-skills.git`；同步修正 `AGENTS.md` 中的环境说明（[PR #11](https://github.com/blitheli/CesiumAI/pull/11)）。
 
 ## 2026-10-06
 
