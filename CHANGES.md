@@ -3,6 +3,10 @@
 按日期倒序记录每次更新。每个日期使用二级标题 `## YYYY-MM-DD`，同日多项改动写在同一标题下。
 前端构建时会读取本文件中最新的日期标题，显示在页面副标题末尾（如 `用自然语言探索和编辑场景-20261006`）。
 
+## 2026-10-07
+
+- Cursor Cloud 环境：`install` 脚本改为幂等安装 .NET 10 SDK（此前快照中实际缺失）、Node 22、skills submodule、npm 依赖与 Playwright Chromium；`.gitmodules` 中 skills submodule 上游改为 `https://github.com/blitheli/astrox-skills.git`；同步修正 `AGENTS.md` 中的环境说明（PR_LINK）。
+
 ## 2026-10-06
 
 - 前端聊天面板助手回复按 GFM 渲染 Markdown（表格、加粗、行内代码、列表、代码块、链接），使用 `react-markdown` + `remark-gfm`；不渲染原始 HTML（作为纯文本显示），链接新窗口打开并带 `rel="noopener noreferrer"`；表格在窄面板内横向滚动，兼容流式输出的半截内容与闪烁光标；用户消息保持纯文本（[PR #8](https://github.com/blitheli/CesiumAI/pull/8)）。
